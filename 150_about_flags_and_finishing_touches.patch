@@ -1,0 +1,202 @@
+diff --git a/chrome/browser/about_flags.cc b/chrome/browser/about_flags.cc
+index b329463946b5e..8467caaed03a8 100644
+--- a/chrome/browser/about_flags.cc
++++ b/chrome/browser/about_flags.cc
+@@ -342,6 +342,7 @@
+ #include "chrome/browser/startup/startup_features.h"
+ #include "chrome/browser/tracing/tracing_features.h"
+ #include "chrome/browser/win/mica_titlebar.h"
++#include "chrome/browser/win/titlebar_config.h"
+ #include "components/stylus_handwriting/win/features.h"
+ #endif
+ 
+@@ -4704,9 +4705,11 @@ const FeatureEntry::FeatureVariation kToolbarGlowUpVariations[] = {
+ // calculate and verify checksum.
+ //
+ // When adding a new choice, add it to the end of the list.
++#include "chrome/browser/supermium_flag_choices.h"
+ const FeatureEntry kFeatureEntries[] = {
+ // Include generated flags for flag unexpiry; see //docs/flag_expiry.md and
+ // //tools/flags/generate_unexpire_flags.py.
++#include "chrome/browser/supermium_flag_entries.h"
+ #include "build/chromeos_buildflags.h"
+ #include "chrome/browser/unexpire_flags_gen.inc"
+     {switches::kEnableBenchmarking, flag_descriptions::kEnableBenchmarkingName,
+diff --git a/chrome/browser/ui/layout_constants.cc b/chrome/browser/ui/layout_constants.cc
+index 8314af2e3c79c..4cc1a267a1812 100644
+--- a/chrome/browser/ui/layout_constants.cc
++++ b/chrome/browser/ui/layout_constants.cc
+@@ -168,13 +168,13 @@ void SetLayoutConstantsFallback() {
+     }
+     if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "v60") {
+         layout_constant_values[(int)LayoutConstant::kTabStripPadWhenMaximized] = 1;
+-        layout_constant_values[(int)LayoutConstant::kTabOverlap] = 11;
++        layout_constant_values[(int)LayoutConstant::kTabOverlap] = 6;
+     } else if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "rectangular") {
+         layout_constant_values[(int)LayoutConstant::kTabStripPadWhenMaximized] = 0;
+-        layout_constant_values[(int)LayoutConstant::kTabOverlap] = 8;
++        layout_constant_values[(int)LayoutConstant::kTabOverlap] = 3;
+     } else if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "cr23") {
+         layout_constant_values[(int)LayoutConstant::kTabStripPadWhenMaximized] = 1;
+-        layout_constant_values[(int)LayoutConstant::kTabOverlap] = 12;
++        layout_constant_values[(int)LayoutConstant::kTabOverlap] = 7;
+     } else {
+         layout_constant_values[(int)LayoutConstant::kTabStripPadWhenMaximized] = 0;
+         layout_constant_values[(int)LayoutConstant::kTabOverlap] = 16;
+diff --git a/chrome/browser/ui/managed_ui.cc b/chrome/browser/ui/managed_ui.cc
+index a72c2b45d99dd..7cd1c584a0a44 100644
+--- a/chrome/browser/ui/managed_ui.cc
++++ b/chrome/browser/ui/managed_ui.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <optional>
+ 
++#include "base/command_line.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/browser_features.h"
+@@ -118,6 +119,9 @@ bool ShouldDisplayManagedUi(Profile* profile) {
+   }
+ #endif  // BUILDFLAG(IS_CHROMEOS)
+ 
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("disable-managed-ui")) {
++    return false;
++  }
+   return enterprise_util::IsBrowserManaged(profile) ||
+          ShouldDisplayManagedByParentUi(profile);
+ }
+diff --git a/chrome/browser/ui/qrcode_generator/qrcode_generator_bubble_controller.cc b/chrome/browser/ui/qrcode_generator/qrcode_generator_bubble_controller.cc
+index a0817fafe64dd..8ac544409f05c 100644
+--- a/chrome/browser/ui/qrcode_generator/qrcode_generator_bubble_controller.cc
++++ b/chrome/browser/ui/qrcode_generator/qrcode_generator_bubble_controller.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/ui/qrcode_generator/qrcode_generator_bubble_controller.h"
+ 
++#include "base/command_line.h"
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/browser_window.h"
+@@ -40,7 +41,7 @@ QRCodeGeneratorBubbleController::~QRCodeGeneratorBubbleController() {
+ 
+ // static
+ bool QRCodeGeneratorBubbleController::IsGeneratorAvailable(const GURL& url) {
+-  if (!url.SchemeIsHTTPOrHTTPS()) {
++  if (!url.SchemeIsHTTPOrHTTPS() || base::CommandLine::ForCurrentProcess()->HasSwitch("disable-qr-generator")) {
+     return false;
+   }
+ 
+diff --git a/chrome/browser/ui/tabs/tab_style.cc b/chrome/browser/ui/tabs/tab_style.cc
+index fbfe095b4c1a3..c65ae3cd970bd 100644
+--- a/chrome/browser/ui/tabs/tab_style.cc
++++ b/chrome/browser/ui/tabs/tab_style.cc
+@@ -21,15 +21,6 @@ namespace {
+ // the tab.
+ constexpr int kSeparatorThickness = 2;
+ constexpr int kSeparatorHorizontalMargin = 2;
+-// TODO (crbug.com/40915785): This constant should be in LayoutConstants.
+-constexpr int kSeparatorHeight = 16;
+-
+-// The padding from the top of the tab to the content area.
+-constexpr int kTabVerticalPadding = 6;
+-constexpr int kTabHorizontalPadding = 8;
+-
+-// The standard tab width is 232 DIP, excluding separators and overlap.
+-constexpr int kTabWidth = 232;
+ 
+ }  // namespace
+ 
+@@ -40,13 +31,14 @@ int TabStyle::GetStandardHeight() const {
+ }
+ 
+ int TabStyle::GetStandardWidth(const bool is_split) const {
++  SetLayoutConstants();
+   if (is_split) {
+     // Split tabs appear as half width with one bottom extension. They also must
+     // include half the tab overlap as the tabs fill the space between them.
+-    return kTabWidth / 2 + GetBottomCornerRadius() + GetTabOverlap() / 2;
++    return GetLayoutConstant(LayoutConstant::kTabWidth) / 2 + GetBottomCornerRadius() + GetTabOverlap() / 2;
+   } else {
+     // The full width includes two extensions with the bottom corner radius.
+-    return kTabWidth + 2 * GetBottomCornerRadius();
++    return GetLayoutConstant(LayoutConstant::kTabWidth) + 2 * GetBottomCornerRadius();
+   }
+ }
+ 
+@@ -79,7 +71,7 @@ int TabStyle::GetMinimumActiveWidth(const bool is_split) const {
+ 
+   if (is_split) {
+     // Only have one set of horizontal padding between tabs in an active split.
+-    return min_active_width - kTabHorizontalPadding / 2;
++    return min_active_width - GetLayoutConstant(LayoutConstant::kTabHorizontalPadding) / 2;
+   }
+ 
+   return min_active_width;
+@@ -98,18 +90,18 @@ int TabStyle::GetMinimumInactiveWidth() const {
+ }
+ 
+ int TabStyle::GetTopCornerRadius() const {
+-  return 10;
++  return GetLayoutConstant(LayoutConstant::kTabTopCornerRadius);
+ }
+ 
+ int TabStyle::GetBottomCornerRadius() const {
+-  return 12;
++  return GetLayoutConstant(LayoutConstant::kTabBottomCornerRadius);
+ }
+ 
+ int TabStyle::GetTabOverlap() const {
+   // The overlap removes the width and the margins of the separator.
+   const float total_separator_width =
+       GetSeparatorMargins().width() + GetSeparatorSize().width();
+-  return 2 * GetBottomCornerRadius() - total_separator_width;
++  return 2 * GetLayoutConstant(LayoutConstant::kTabOverlap) - total_separator_width;
+ }
+ 
+ gfx::Size TabStyle::GetPreviewImageSize() const {
+@@ -119,7 +111,7 @@ gfx::Size TabStyle::GetPreviewImageSize() const {
+ }
+ 
+ gfx::Size TabStyle::GetSeparatorSize() const {
+-  return gfx::Size(kSeparatorThickness, kSeparatorHeight);
++  return gfx::Size(kSeparatorThickness, GetLayoutConstant(LayoutConstant::kTabSeparatorHeight));
+ }
+ 
+ gfx::Insets TabStyle::GetSeparatorMargins() const {
+@@ -269,10 +261,10 @@ SkColor TabStyle::GetCurrentTabBackgroundColor(
+ 
+ gfx::Insets TabStyle::GetContentsInsets() const {
+   return gfx::Insets::TLBR(
+-      kTabVerticalPadding + GetLayoutConstant(LayoutConstant::kTabStripPadding),
+-      GetBottomCornerRadius() + kTabHorizontalPadding,
+-      kTabVerticalPadding + GetLayoutConstant(LayoutConstant::kTabStripPadding),
+-      GetBottomCornerRadius() + kTabHorizontalPadding);
++      GetLayoutConstant(LayoutConstant::kTabVerticalPadding) + GetLayoutConstant(LayoutConstant::kTabStripPadding),
++      GetBottomCornerRadius() + GetLayoutConstant(LayoutConstant::kTabHorizontalPadding),
++      GetLayoutConstant(LayoutConstant::kTabVerticalPadding) + GetLayoutConstant(LayoutConstant::kTabStripPadding),
++      GetBottomCornerRadius() + GetLayoutConstant(LayoutConstant::kTabHorizontalPadding));
+ }
+ 
+ float TabStyle::GetSelectedTabOpacity() const {
+diff --git a/chrome/browser/ui/toasts/toast_controller.cc b/chrome/browser/ui/toasts/toast_controller.cc
+index d2c963888c1d2..dace357627ef9 100644
+--- a/chrome/browser/ui/toasts/toast_controller.cc
++++ b/chrome/browser/ui/toasts/toast_controller.cc
+@@ -13,6 +13,7 @@
+ #include "base/check.h"
+ #include "base/check_is_test.h"
+ #include "base/check_op.h"
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "base/functional/bind.h"
+ #include "base/location.h"
+@@ -104,6 +105,9 @@ bool ToastController::IsShowingToast() const {
+ }
+ 
+ bool ToastController::CanShowToast(ToastId toast_id) const {
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("disable-toasts")) {
++    return false;
++  }
+   if (static_cast<toasts::ToastAlertLevel>(
+           g_browser_process->local_state()->GetInteger(
+               prefs::kToastAlertLevel)) ==

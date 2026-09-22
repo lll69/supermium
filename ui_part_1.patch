@@ -1,0 +1,707 @@
+diff --git a/base/feature_list.cc b/base/feature_list.cc
+index 43797ef945756..f7b0c53c1db3b 100644
+--- a/base/feature_list.cc
++++ b/base/feature_list.cc
+@@ -39,6 +39,11 @@
+ #include "base/strings/stringprintf.h"
+ #include "build/build_config.h"
+ 
++#ifdef UNSAFE_BUFFERS_BUILD
++// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
++#pragma allow_unsafe_buffers
++#endif
++
+ namespace base {
+ 
+ namespace {
+@@ -845,6 +850,9 @@ void FeatureList::FinalizeInitialization() {
+ bool FeatureList::IsFeatureEnabled(const Feature& feature) const {
+   OverrideState overridden_state = GetOverrideState(feature);
+ 
++  if(!strcmp(feature.name, "WebContentsForceDark") && 
++     base::CommandLine::ForCurrentProcess()->HasSwitch("dark-mode-settings"))
++    return true;
+   // If marked as OVERRIDE_USE_DEFAULT, simply return the default state below.
+   if (overridden_state != OVERRIDE_USE_DEFAULT) {
+     return overridden_state == OVERRIDE_ENABLE_FEATURE;
+diff --git a/base/features.cc b/base/features.cc
+index bcd0c52eca76a..306e1b04830a3 100644
+--- a/base/features.cc
++++ b/base/features.cc
+@@ -62,6 +62,14 @@ BASE_FEATURE(kFeatureParamWithCache, FEATURE_ENABLED_BY_DEFAULT);
+ // issues are found with it.
+ BASE_FEATURE(kFastFilePathIsParent, FEATURE_ENABLED_BY_DEFAULT);
+ 
++BASE_FEATURE(kForceDarkModeFlag,
++             "ForceDarkModeFlag",
++             base::FEATURE_DISABLED_BY_DEFAULT);
++
++BASE_FEATURE(kIncognitoBrandConsistencyForDesktop,
++             "IncognitoBrandConsistencyForDesktop",
++             base::FEATURE_DISABLED_BY_DEFAULT);
++
+ // Use non default low memory device threshold.
+ // Value should be given via |LowMemoryDeviceThresholdMB|.
+ #if BUILDFLAG(IS_ANDROID)
+diff --git a/base/features.h b/base/features.h
+index 32180365193ef..462f57fa44360 100644
+--- a/base/features.h
++++ b/base/features.h
+@@ -20,6 +20,10 @@ BASE_EXPORT BASE_DECLARE_FEATURE(kFeatureParamWithCache);
+ 
+ BASE_EXPORT BASE_DECLARE_FEATURE(kFastFilePathIsParent);
+ 
++BASE_EXPORT BASE_DECLARE_FEATURE(kForceDarkModeFlag);
++
++BASE_EXPORT BASE_DECLARE_FEATURE(kIncognitoBrandConsistencyForDesktop);
++
+ BASE_EXPORT BASE_DECLARE_FEATURE_PARAM(bool,
+                                        kUseRustJsonParserInCurrentSequence);
+ 
+diff --git a/chrome/app/chromium_strings.grd b/chrome/app/chromium_strings.grd
+index a154b12dc4fa7..0443cb4ba44bd 100644
+--- a/chrome/app/chromium_strings.grd
++++ b/chrome/app/chromium_strings.grd
+@@ -24,7 +24,7 @@ If you update this file, be sure also to update google_chrome_strings.grd. -->
+     <output filename="branded_strings_de.pak" type="data_package" lang="de" />
+     <output filename="branded_strings_el.pak" type="data_package" lang="el" />
+     <output filename="branded_strings_en-GB.pak" type="data_package" lang="en-GB" />
+-    <output filename="branded_strings_en-US.pak" type="data_package" lang="en" />
++    <output filename="branded_strings_en-US.pak" type="data_package" lang="en-GB" />
+     <output filename="branded_strings_es.pak" type="data_package" lang="es" />
+     <output filename="branded_strings_es-419.pak" type="data_package" lang="es-419" />
+     <output filename="branded_strings_et.pak" type="data_package" lang="et" />
+@@ -294,10 +294,10 @@ If you update this file, be sure also to update google_chrome_strings.grd. -->
+         </then>
+         <else>
+           <message name="IDS_PRODUCT_NAME" desc="The Chrome application name" translateable="false">
+-            Chromium
++            Supermium
+           </message>
+           <message name="IDS_SHORT_PRODUCT_NAME" desc="The Chrome application short name." translateable="false">
+-            Chromium
++            Supermium
+           </message>
+         </else>
+       </if>
+@@ -550,7 +550,7 @@ New bookmarks can’t be saved in your account until you delete some. If you sig
+         </message>
+       </if>
+       <message name="IDS_ACCNAME_APP" desc="The accessible name for the app menu." translateable="false">
+-        Chromium
++        Supermium
+       </message>
+       <!-- Hung Browser Detector -->
+       <if expr="is_win">
+@@ -667,7 +667,7 @@ Chromium is unable to recover your settings.
+         Chromium lets you know if your passwords are ever compromised
+       </message>
+       <message name="IDS_PASSWORD_MANAGER_TITLE_BRAND" desc="The product name used in the title of the password bubble." translateable="false">
+-        Chromium
++        Supermium
+       </message>
+       <message name="IDS_PASSWORD_BUBBLES_PASSWORD_MANAGER_LINK_TEXT_SAVING_ON_DEVICE" desc="The text of the Google Password Manager links displayed on Password Manager bubbles footer when the credentials are stored only locally.">
+         Password Manager
+@@ -2519,7 +2519,7 @@ Chromium is unable to recover your settings.
+       <!-- User happiness tracking survey UI -->
+       <if expr="not is_android">
+         <message name="IDS_HATS_BUBBLE_TITLE" translateable="false" desc="The title of Happiness Tracking Survey's invitation banner, it invites users to take a survey">
+-          Help us improve Chromium
++          Help us improve Supermium
+         </message>
+       </if>
+ 
+@@ -2728,7 +2728,7 @@ Chromium is unable to recover your settings.
+       <!-- ChromiumUpdater Strings -->
+       <if expr="is_win">
+         <message name="IDS_FRIENDLY_COMPANY_NAME" desc="Company name" translateable="false">
+-          Chromium
++          Supermium
+         </message>
+         <message name="IDS_NO_UPDATE_RESPONSE" desc="Updater response for no updates when handling install result.">
+           No update is available
+diff --git a/chrome/app/generated_resources.grd b/chrome/app/generated_resources.grd
+index 86731fd1704bc..036bcf5258f67 100644
+--- a/chrome/app/generated_resources.grd
++++ b/chrome/app/generated_resources.grd
+@@ -29,7 +29,7 @@ are declared in tools/grit/grit_args.gni.
+     <output filename="generated_resources_de.pak" type="data_package" lang="de" />
+     <output filename="generated_resources_el.pak" type="data_package" lang="el" />
+     <output filename="generated_resources_en-GB.pak" type="data_package" lang="en-GB" />
+-    <output filename="generated_resources_en-US.pak" type="data_package" lang="en" />
++    <output filename="generated_resources_en-US.pak" type="data_package" lang="en-GB" />
+     <output filename="generated_resources_es.pak" type="data_package" lang="es" />
+     <output filename="generated_resources_es-419.pak" type="data_package" lang="es-419" />
+     <output filename="generated_resources_et.pak" type="data_package" lang="et" />
+diff --git a/chrome/app/theme/chromium/BRANDING b/chrome/app/theme/chromium/BRANDING
+index f8363d5b294fe..609f6ebf8dbcd 100644
+--- a/chrome/app/theme/chromium/BRANDING
++++ b/chrome/app/theme/chromium/BRANDING
+@@ -1,10 +1,10 @@
+-COMPANY_FULLNAME=The Chromium Authors
+-COMPANY_SHORTNAME=The Chromium Authors
+-PRODUCT_FULLNAME=Chromium
+-PRODUCT_SHORTNAME=Chromium
+-PRODUCT_INSTALLER_FULLNAME=Chromium Installer
+-PRODUCT_INSTALLER_SHORTNAME=Chromium Installer
+-COPYRIGHT=Copyright @LASTCHANGE_YEAR@ The Chromium Authors. All rights reserved.
++COMPANY_FULLNAME=Legacy Software Corporation
++COMPANY_SHORTNAME=Legacy Software Corporation
++PRODUCT_FULLNAME=Supermium
++PRODUCT_SHORTNAME=Supermium
++PRODUCT_INSTALLER_FULLNAME=Supermium Installer
++PRODUCT_INSTALLER_SHORTNAME=Supermium Installer
++COPYRIGHT=Copyright @LASTCHANGE_YEAR@ Legacy Software Corporation. All rights reserved.
+ MAC_BUNDLE_ID=org.chromium.Chromium
+ MAC_CREATOR_CODE=Cr24
+ MAC_TEAM_ID=
+diff --git a/chrome/browser/themes/theme_helper.cc b/chrome/browser/themes/theme_helper.cc
+index 2607ad2493d8f..2c23bf499257d 100644
+--- a/chrome/browser/themes/theme_helper.cc
++++ b/chrome/browser/themes/theme_helper.cc
+@@ -3,6 +3,7 @@
+ // found in the LICENSE file.
+ 
+ #include "base/feature_list.h"
++#include "base/features.h"
+ #include "base/no_destructor.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/themes/browser_theme_pack.h"
+@@ -117,6 +118,31 @@ base::RefCountedMemory* ThemeHelper::GetRawData(
+   return data;
+ }
+ 
++// For legacy reasons, the theme supplier requires the incognito variants of
++// color IDs.  This converts from normal to incognito IDs where they exist.
++int GetIncognitoId(int id) {
++  switch (id) {
++    case TP::COLOR_FRAME_ACTIVE:
++      return TP::COLOR_FRAME_ACTIVE_INCOGNITO;
++    case TP::COLOR_FRAME_INACTIVE:
++      return TP::COLOR_FRAME_INACTIVE_INCOGNITO;
++    case TP::COLOR_TAB_BACKGROUND_INACTIVE_FRAME_ACTIVE:
++      return TP::COLOR_TAB_BACKGROUND_INACTIVE_FRAME_ACTIVE_INCOGNITO;
++    case TP::COLOR_TAB_BACKGROUND_INACTIVE_FRAME_INACTIVE:
++      return TP::COLOR_TAB_BACKGROUND_INACTIVE_FRAME_INACTIVE_INCOGNITO;
++    case TP::COLOR_TAB_FOREGROUND_INACTIVE_FRAME_ACTIVE:
++      return TP::COLOR_TAB_FOREGROUND_INACTIVE_FRAME_ACTIVE_INCOGNITO;
++    case TP::COLOR_TAB_FOREGROUND_INACTIVE_FRAME_INACTIVE:
++      return TP::COLOR_TAB_FOREGROUND_INACTIVE_FRAME_INACTIVE_INCOGNITO;
++    case TP::COLOR_WINDOW_CONTROL_BUTTON_BACKGROUND_ACTIVE:
++      return TP::COLOR_WINDOW_CONTROL_BUTTON_BACKGROUND_INCOGNITO_ACTIVE;
++    case TP::COLOR_WINDOW_CONTROL_BUTTON_BACKGROUND_INACTIVE:
++      return TP::COLOR_WINDOW_CONTROL_BUTTON_BACKGROUND_INCOGNITO_INACTIVE;
++    default:
++      return id;
++  }
++}
++
+ color_utils::HSL ThemeHelper::GetTint(
+     int id,
+     bool incognito,
+diff --git a/chrome/browser/themes/theme_helper.h b/chrome/browser/themes/theme_helper.h
+index 095e3d1c69a43..628fa729b5c63 100644
+--- a/chrome/browser/themes/theme_helper.h
++++ b/chrome/browser/themes/theme_helper.h
+@@ -95,9 +95,21 @@ class ThemeHelper {
+  private:
+   friend class theme_service_internal::ThemeServiceTest;
+ 
++  // Whether the default incognito color/tint for |id| should be used, if
++  // available.
++  static bool UseIncognitoColor(int id,
++                                const CustomThemeSupplier* theme_supplier);
++
+   // Whether dark default colors/tints should be used, if available.
+   static bool UseDarkModeColors(const CustomThemeSupplier* theme_supplier);
+ 
++  // Whether the color from |theme_supplier| (if any) should be ignored for
++  // the given |id| and |incognito| state.
++  static bool ShouldIgnoreThemeSupplier(
++      int id,
++      bool incognito,
++      const CustomThemeSupplier* theme_supplier);
++
+   // Returns a cross platform image for an id.
+   gfx::Image GetImageNamed(int id,
+                            bool incognito,
+diff --git a/chrome/browser/themes/theme_helper_win.cc b/chrome/browser/themes/theme_helper_win.cc
+index c78bb18ef2703..9038ca5200b9d 100644
+--- a/chrome/browser/themes/theme_helper_win.cc
++++ b/chrome/browser/themes/theme_helper_win.cc
+@@ -4,11 +4,17 @@
+ 
+ #include "chrome/browser/themes/theme_helper_win.h"
+ 
++#include "base/win/windows_version.h"
+ #include "chrome/browser/themes/custom_theme_supplier.h"
+ #include "chrome/browser/themes/theme_properties.h"
+ #include "chrome/browser/win/mica_titlebar.h"
++#include "chrome/browser/win/titlebar_config.h"
+ #include "chrome/grit/theme_resources.h"
+ 
++BASE_FEATURE(kForceXpTheme,
++             "ForceXpTheme",
++             base::FEATURE_DISABLED_BY_DEFAULT);
++
+ int ThemeHelperWin::GetDefaultDisplayProperty(int id) const {
+   if (id == ThemeProperties::SHOULD_FILL_BACKGROUND_TAB_COLOR) {
+     return !ShouldDefaultThemeUseMicaTitlebar();
+@@ -19,5 +25,11 @@ int ThemeHelperWin::GetDefaultDisplayProperty(int id) const {
+ 
+ bool ThemeHelperWin::ShouldUseNativeFrame(
+     const CustomThemeSupplier* theme_supplier) const {
+-  return true;
++	// If it returns false, the XP fallback theme is used.
++	// And yes, Chromium has muddied the waters of what is considered "native".
++	// Aero Glass is "native", Mica is "native", and so is the Windows 10-style theme that is drawn
++	// by Chromium itself.
++	// Only the "original" Chromium theme that mimicks Aero is not considered native.
++  return !HasCustomImage(IDR_THEME_FRAME, theme_supplier) && ((base::win::GetVersion() >= base::win::Version::WIN8) 
++         || !ShouldCustomDrawSystemTitlebar()) && !base::FeatureList::IsEnabled(kForceXpTheme);
+ }
+diff --git a/chrome/browser/themes/theme_properties.cc b/chrome/browser/themes/theme_properties.cc
+index 48e848aec610b..80b215f4505b8 100644
+--- a/chrome/browser/themes/theme_properties.cc
++++ b/chrome/browser/themes/theme_properties.cc
+@@ -245,9 +245,9 @@ color_utils::HSL ThemeProperties::GetDefaultTint(int id,
+     }
+ 
+     if (incognito) {
+-      return {0.57, 0.65, 0.1405};  // #DEE1E6 -> kGoogleGrey800
++      return {0.57, 0.65, 0.87};
+     }
+-    return {-1, -1, 0.642};  // #DEE1E6 -> #E7EAED
++    return {-1, -1, 0.75};
+   }
+ 
+   return {-1, -1, -1};
+diff --git a/chrome/browser/themes/theme_service.cc b/chrome/browser/themes/theme_service.cc
+index 097539947b493..c62502289a0ce 100644
+--- a/chrome/browser/themes/theme_service.cc
++++ b/chrome/browser/themes/theme_service.cc
+@@ -14,6 +14,7 @@
+ #include "base/auto_reset.h"
+ #include "base/command_line.h"
+ #include "base/containers/fixed_flat_map.h"
++#include "base/features.h"
+ #include "base/functional/bind.h"
+ #include "base/location.h"
+ #include "base/memory/raw_ptr.h"
+@@ -240,7 +241,10 @@ base::RefCountedMemory* ThemeService::BrowserThemeProvider::GetRawData(
+ 
+ CustomThemeSupplier* ThemeService::BrowserThemeProvider::GetThemeSupplier()
+     const {
+-  return incognito_ ? nullptr : delegate_->GetThemeSupplier();
++    bool should_ignore_theme_supplier =
++      incognito_ && base::FeatureList::IsEnabled(
++                        base::features::kIncognitoBrandConsistencyForDesktop);
++  return should_ignore_theme_supplier ? nullptr : delegate_->GetThemeSupplier();
+ }
+ 
+ // ThemeService ---------------------------------------------------------------
+diff --git a/chrome/browser/ui/color/chrome_color_mixers.cc b/chrome/browser/ui/color/chrome_color_mixers.cc
+index 9dfe5e7cd531d..1ac8e9dc404c1 100644
+--- a/chrome/browser/ui/color/chrome_color_mixers.cc
++++ b/chrome/browser/ui/color/chrome_color_mixers.cc
+@@ -8,8 +8,10 @@
+ #include <string_view>
+ 
+ #include "base/containers/fixed_flat_map.h"
++#include "base/files/file_util.h"
+ #include "base/functional/bind.h"
+ #include "base/no_destructor.h"
++#include "base/path_service.h"
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/color/chrome_color_mixer.h"
+ #include "chrome/browser/ui/color/material_chrome_color_mixer.h"
+@@ -23,7 +25,11 @@
+ #include "chrome/browser/ui/color/product_specifications_color_mixer.h"
+ #include "chrome/browser/ui/color/projects_panel_color_mixer.h"
+ #include "chrome/browser/ui/color/tab_strip_color_mixer.h"
++#include "chrome/common/chrome_paths.h"
++#include "ui/color/color_mixer.h"
++#include "ui/color/color_provider.h"
+ #include "ui/color/color_provider_utils.h"
++#include "ui/color/color_recipe.h"
+ 
+ namespace {
+ 
+@@ -54,6 +60,81 @@ bool ChromeColorProviderUtilsCallbacks::ColorIdName(
+ 
+ }  // namespace
+ 
++typedef struct DataItem {
++	int datakey;
++	std::vector<int> values;
++}DataItem;
++
++void AddUserDefinedMixer(ui::ColorProvider* provider, const ui::ColorProviderKey& key) {
++	// This is the first implementation of the parser for user-defined customization values for Supermium components.
++	ui::ColorMixer& mixer = provider->AddMixer();
++
++	base::FilePath userdir;
++	if(!base::PathService::Get(chrome::DIR_USER_DATA, &userdir))
++		return; // Things are seriously wrong if the user data directory cannot be located.
++	const base::FilePath userpath = userdir.Append(FILE_PATH_LITERAL("scs"));
++	std::optional<int64_t> file_size = base::GetFileSize(userpath);
++	if(!file_size.has_value())
++		return;
++	std::vector<char> buf(file_size.value());
++	base::ReadFile(userpath, reinterpret_cast<char*>(buf.data()), file_size.value());
++	std::string bufstr = std::string(reinterpret_cast<char*>(buf.data()));
++
++	std::string::size_type sectionstart = bufstr.find("colour");
++	std::string::size_type sectionend = bufstr.find("endcolour");
++
++	if(sectionstart == std::string::npos || sectionend == std::string::npos)
++		return;
++
++    sectionstart += std::string("colour").length();
++
++    std::string sectionContent = bufstr.substr(sectionstart, sectionend - sectionstart);
++
++    std::string::size_type pos = 0;
++    while ((pos = sectionContent.find("{", pos)) != std::string::npos) {
++        std::string::size_type endPos = sectionContent.find("}", pos);
++        if (endPos == std::string::npos) {
++            break;
++        }
++
++        std::string dataItemStr = sectionContent.substr(pos + 1, endPos - pos - 1);
++        std::string::size_type equalPos = dataItemStr.find('=');
++
++        if (equalPos != std::string::npos) {
++            DataItem dataItem;
++			std::string strkey = dataItemStr.substr(0, equalPos);
++			if(!std::all_of(strkey.begin(), strkey.end(), [](char c) {return c >= '0' && c <= '9';}))
++			    break;
++            dataItem.datakey = std::stoi(strkey);
++            std::string valuesStr = dataItemStr.substr(equalPos + 1);
++
++            // Parse the values
++            std::istringstream valuesStream(valuesStr);
++            std::string value;
++            while (std::getline(valuesStream, value, ',')) {
++				if(!std::all_of(value.begin(), value.end(), [](char c) {return c >= '0' && c <= '9';}))
++					break; // No exceptions, so we must verify that there are only integers in the value before continuing.
++				           // If not, the config file is considered to be "compromised" and needs to be replaced or fixed.
++						   // We will not tolerate any unexpected values in the data.
++				if(value.size() > 3)
++					break; // Any "unnecessarily large" numbers will also be blocked.
++				int val = std::stoi(value);
++				if(val > 255)
++					break;
++                dataItem.values.push_back(val);
++            }
++
++			if(dataItem.values.size() != 3)
++				break; // Fail if there is an incorrect quantity of values in the data item.
++
++		    if(dataItem.datakey > 0 && dataItem.datakey < kChromeColorsEnd)
++		        mixer[dataItem.datakey] = {SkColorSetRGB(dataItem.values.at(0), dataItem.values.at(1), dataItem.values.at(2))};
++        }
++
++        pos = endPos + 1;
++    }
++}
++
+ void AddChromeColorMixers(ui::ColorProvider* provider,
+                           const ui::ColorProviderKey& key) {
+   static base::NoDestructor<ChromeColorProviderUtilsCallbacks>
+@@ -83,4 +164,6 @@ void AddChromeColorMixers(ui::ColorProvider* provider,
+   if (key.app_controller) {
+     key.app_controller->AddColorMixers(provider, key);
+   }
++
++  AddUserDefinedMixer(provider, key);
+ }
+diff --git a/chrome/browser/win/mica_titlebar.cc b/chrome/browser/win/mica_titlebar.cc
+index 2dcd8cfb651f0..3bb8cc3725ef9 100644
+--- a/chrome/browser/win/mica_titlebar.cc
++++ b/chrome/browser/win/mica_titlebar.cc
+@@ -12,7 +12,7 @@
+ 
+ // Allows the titlebar to be drawn by the system using the Mica material
+ // on Windows 11, version 22H2 and above.
+-BASE_FEATURE(kWindows11MicaTitlebar, base::FEATURE_DISABLED_BY_DEFAULT);
++BASE_FEATURE(kWindows11MicaTitlebar, base::FEATURE_ENABLED_BY_DEFAULT);
+ 
+ bool ShouldDefaultThemeUseMicaTitlebar() {
+   return SystemTitlebarCanUseMicaMaterial() &&
+@@ -23,6 +23,6 @@ bool ShouldDefaultThemeUseMicaTitlebar() {
+ }
+ 
+ bool SystemTitlebarCanUseMicaMaterial() {
+-  return base::win::GetVersion() >= base::win::Version::WIN11_22H2 &&
++  return base::win::GetVersion() >= base::win::Version::VISTA &&
+          base::FeatureList::IsEnabled(kWindows11MicaTitlebar);
+ }
+diff --git a/chrome/browser/win/titlebar_config.cc b/chrome/browser/win/titlebar_config.cc
+index 7898ea88ca529..41cc07e9c32d5 100644
+--- a/chrome/browser/win/titlebar_config.cc
++++ b/chrome/browser/win/titlebar_config.cc
+@@ -4,14 +4,51 @@
+ 
+ #include "chrome/browser/win/titlebar_config.h"
+ 
++#include <Windows.h>
++#include "base/command_line.h"
++#include "base/win/windows_version.h"
+ #include "chrome/browser/themes/theme_service.h"
+ #include "chrome/browser/themes/theme_service_factory.h"
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/win/mica_titlebar.h"
++#include "chrome/common/chrome_switches.h"
++
++bool ShouldCustomDrawSystemTitlebar() {
++  // Some extra code added here because those with pre-win8 and no DWM will have to fallback on the custom titlebar.
++  BOOL result = FALSE;
++
++  typedef HRESULT(WINAPI* DwmIsCompositionEnabledFunc)(BOOL* enabled);
++  DwmIsCompositionEnabledFunc func_ = nullptr;
++
++  HMODULE dwmapi_library_ = LoadLibraryW(L"dwmapi.dll");
++  if (dwmapi_library_) {
++    func_ = reinterpret_cast<DwmIsCompositionEnabledFunc>(
++        GetProcAddress(dwmapi_library_, "DwmIsCompositionEnabled"));
++  }
++  else
++	  return true;
++ 
++  if (func_) {
++	  func_(&result);
++  }
++  else
++	  return true;
++  // Cache flag lookup.
++  static const bool custom_titlebar_disabled =
++      base::CommandLine::InitializedForCurrentProcess() &&
++      (base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "disable-windows10-custom-titlebar") ||
++	  base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "windows11-mica-titlebar"));
++
++  return (!custom_titlebar_disabled &&
++         base::win::GetVersion() >= base::win::Version::WIN10) || !result;
++}
+ 
+ bool ShouldBrowserCustomDrawTitlebar(BrowserView* browser_view) {
+-  return !ShouldDefaultThemeUseMicaTitlebar() ||
++  return ShouldCustomDrawSystemTitlebar() ||
++         !ShouldDefaultThemeUseMicaTitlebar() ||
+          !ThemeServiceFactory::GetForProfile(browser_view->GetProfile())
+               ->UsingSystemTheme() ||
+          (!browser_view->browser()->is_type_normal() &&
+diff --git a/chrome/browser/win/titlebar_config.h b/chrome/browser/win/titlebar_config.h
+index f0d13d10bd284..78214a90c1832 100644
+--- a/chrome/browser/win/titlebar_config.h
++++ b/chrome/browser/win/titlebar_config.h
+@@ -2,6 +2,8 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include "base/feature_list.h"
++
+ #ifndef CHROME_BROWSER_WIN_TITLEBAR_CONFIG_H_
+ #define CHROME_BROWSER_WIN_TITLEBAR_CONFIG_H_
+ 
+@@ -10,4 +12,9 @@ class BrowserView;
+ // Returns whether we should custom draw the titlebar for a browser window.
+ bool ShouldBrowserCustomDrawTitlebar(BrowserView* browser_view);
+ 
++// Returns whether we should always custom draw the system title bar.
++bool ShouldCustomDrawSystemTitlebar();
++
++BASE_DECLARE_FEATURE(kForceXpTheme);
++
+ #endif  // CHROME_BROWSER_WIN_TITLEBAR_CONFIG_H_
+diff --git a/chrome/install_static/chromium_install_modes.h b/chrome/install_static/chromium_install_modes.h
+index f29a8228fe611..a625ee9b6c213 100644
+--- a/chrome/install_static/chromium_install_modes.h
++++ b/chrome/install_static/chromium_install_modes.h
+@@ -21,10 +21,10 @@ inline constexpr wchar_t kCompanyPathName[] = L"";
+ 
+ // The brand-specific product name to be included as a component of the install
+ // and user data directory paths.
+-inline constexpr wchar_t kProductPathName[] = L"Chromium";
++inline constexpr wchar_t kProductPathName[] = L"Supermium";
+ 
+ // The brand-specific safe browsing client name.
+-inline constexpr char kSafeBrowsingName[] = "chromium";
++inline constexpr char kSafeBrowsingName[] = "supermium";
+ 
+ // Note: This list of indices must be kept in sync with the brand-specific
+ // resource strings in chrome/installer/util/prebuild/create_string_rc.
+@@ -45,15 +45,15 @@ inline constexpr auto kInstallModes = std::to_array<InstallConstants>({
+         .logo_suffix = L"",  // No logo suffix for the primary install mode.
+         .app_guid =
+             L"",  // Empty app_guid since no integration with Google Update.
+-        .base_app_name = L"Chromium",              // A distinct base_app_name.
+-        .base_app_id = L"Chromium",                // A distinct base_app_id.
+-        .browser_prog_id_prefix = L"ChromiumHTM",  // Browser ProgID prefix.
++        .base_app_name = L"Supermium",              // A distinct base_app_name.
++        .base_app_id = L"Supermium",                // A distinct base_app_id.
++        .browser_prog_id_prefix = L"SupemiumHTM",  // Browser ProgID prefix.
+         .browser_prog_id_description =
+-            L"Chromium HTML Document",  // Browser ProgID description.
+-        .direct_launch_url_scheme = "chromium",
+-        .pdf_prog_id_prefix = L"ChromiumPDF",  // PDF ProgID prefix.
++            L"Supermium HTML Document",  // Browser ProgID description.
++        .direct_launch_url_scheme = "supermium",
++        .pdf_prog_id_prefix = L"SupemiumPDF",  // PDF ProgID prefix.
+         .pdf_prog_id_description =
+-            L"Chromium PDF Document",  // PDF ProgID description.
++            L"Supermium PDF Document",  // PDF ProgID description.
+         .active_setup_guid =
+             L"{7D2B3E1D-D096-4594-9D8F-A6667F12E0AC}",  // Active Setup
+                                                         // GUID.
+diff --git a/chrome/installer/setup/installer_crash_reporter_client.cc b/chrome/installer/setup/installer_crash_reporter_client.cc
+index 64c13b78f7d00..f850cd78fc1d7 100644
+--- a/chrome/installer/setup/installer_crash_reporter_client.cc
++++ b/chrome/installer/setup/installer_crash_reporter_client.cc
+@@ -103,7 +103,7 @@ bool InstallerCrashReporterClient::ReportingIsEnforcedByPolicy(bool* enabled) {
+       L"SOFTWARE\\Policies\\Google\\Chrome";
+ #else
+   static const wchar_t kRegistryChromePolicyKey[] =
+-      L"SOFTWARE\\Policies\\Chromium";
++      L"SOFTWARE\\Policies\\Supermium";
+ #endif
+   static const wchar_t kMetricsReportingEnabled[] = L"MetricsReportingEnabled";
+ 
+diff --git a/components/policy/tools/generate_policy_source.py b/components/policy/tools/generate_policy_source.py
+index 775a99a25a9dc..8de8c0b1332ed 100755
+--- a/components/policy/tools/generate_policy_source.py
++++ b/components/policy/tools/generate_policy_source.py
+@@ -28,7 +28,7 @@ from xml.sax.saxutils import escape as xml_escape
+ 
+ CHROME_POLICY_KEY = 'SOFTWARE\\\\Policies\\\\Google\\\\Chrome'
+ CHROME_FOR_TESTING_POLICY_KEY = CHROME_POLICY_KEY + ' for Testing'
+-CHROMIUM_POLICY_KEY = 'SOFTWARE\\\\Policies\\\\Chromium'
++CHROMIUM_POLICY_KEY = 'SOFTWARE\\\\Policies\\\\Supermium'
+ PLATFORM_STRINGS = {
+     'chrome_frame': ['win'],
+     'chrome_os': ['chrome_os'],
+diff --git a/components/policy/tools/template_writers/writer_configuration.py b/components/policy/tools/template_writers/writer_configuration.py
+index 283ea725c5a18..11b3e4e466a95 100755
+--- a/components/policy/tools/template_writers/writer_configuration.py
++++ b/components/policy/tools/template_writers/writer_configuration.py
+@@ -34,14 +34,14 @@ def GetConfigurationForBuild(defines):
+         'webview_name': 'Chromium WebView',
+         'win_config': {
+             'win': {
+-                'reg_mandatory_key_name': 'Software\\Policies\\Chromium',
++                'reg_mandatory_key_name': 'Software\\Policies\\Supermium',
+                 'reg_recommended_key_name':
+-                'Software\\Policies\\Chromium\\Recommended',
++                'Software\\Policies\\Supermium\\Recommended',
+                 'mandatory_category_path': ['chromium'],
+                 'recommended_category_path': ['chromium_recommended'],
+                 'category_path_strings': {
+-                    'chromium': 'Chromium',
+-                    'chromium_recommended': 'Chromium - {doc_recommended}',
++                    'chromium': 'Supermium',
++                    'chromium_recommended': 'Supermium - {doc_recommended}',
+                 },
+                 'namespace': 'Chromium.Policies.Chromium',
+             },
+diff --git a/ui/views/win/hwnd_message_handler.cc b/ui/views/win/hwnd_message_handler.cc
+index 8d7b890d4822a..35e638487a01b 100644
+--- a/ui/views/win/hwnd_message_handler.cc
++++ b/ui/views/win/hwnd_message_handler.cc
+@@ -37,6 +37,7 @@
+ #include "base/win/scoped_gdi_object.h"
+ #include "base/win/win_util.h"
+ #include "base/win/windows_version.h"
++#include "chrome/browser/win/titlebar_config.h"
+ #include "services/tracing/public/cpp/perfetto/macros.h"
+ #include "third_party/perfetto/protos/perfetto/trace/track_event/chrome_window_handle_event_info.pbzero.h"
+ #include "third_party/skia/include/core/SkPath.h"
+@@ -359,7 +360,8 @@ class HWNDMessageHandler::ScopedRedrawLock {
+         hwnd_(owner_->hwnd()),
+         should_lock_(owner_->IsVisible() && !owner->HasChildRenderingWindow() &&
+                      ::IsWindow(hwnd_) && !owner_->IsHeadless() &&
+-                     (!(::GetWindowLong(hwnd_, GWL_STYLE) & WS_CAPTION))) {
++                     (!(GetWindowLong(hwnd_, GWL_STYLE) & WS_CAPTION) ||
++					  ShouldCustomDrawSystemTitlebar())) {
+     if (should_lock_) {
+       owner_->LockUpdates();
+     }
+@@ -657,7 +659,8 @@ std::vector<HWND> HWNDMessageHandler::GetOwnedWindows() {
+ }
+ 
+ void HWNDMessageHandler::SetDwmFrameExtension(DwmFrameState state) {
+-  if (!delegate_->HasFrame() && !is_translucent_) {
++  if (!delegate_->HasFrame() && !ShouldCustomDrawSystemTitlebar() &&
++	  !is_translucent_) {
+     gfx::Insets insets;
+     if (state == DwmFrameState::kOn && !IsMaximized()) {
+       insets.set_top(1);
+@@ -725,7 +728,7 @@ void HWNDMessageHandler::Show(ui::mojom::WindowShowState show_state,
+     native_show_state = SW_SHOWMAXIMIZED;
+   } else {
+     const bool is_maximized_or_arranged =
+-        IsMaximized() || IsWindowArranged(hwnd());
++        IsMaximized();
+ 
+     // Use SW_SHOW/SW_SHOWNA instead of SW_SHOWNORMAL/SW_SHOWNOACTIVATE so that
+     // the window is not restored to its original position if it is maximized.
+@@ -2057,7 +2060,8 @@ void HWNDMessageHandler::OnEnterSizeMove() {
+ 
+ LRESULT HWNDMessageHandler::OnEraseBkgnd(HDC dc) {
+   gfx::Insets insets;
+-  if (delegate_->GetDwmFrameInsetsInPixels(&insets) && !insets.IsEmpty() &&
++  if (!ShouldCustomDrawSystemTitlebar() &&
++	  delegate_->GetDwmFrameInsetsInPixels(&insets) && !insets.IsEmpty() &&
+       needs_dwm_frame_clear_) {
+     // This is necessary to avoid white flashing in the titlebar area around the
+     // minimize/maximize/close buttons.
+@@ -2650,6 +2654,7 @@ void HWNDMessageHandler::OnNCPaint(HRGN rgn) {
+   // It's required to avoid some native painting artifacts from appearing when
+   // the window is resized.
+   if (!delegate_->HasNonClientView() || IsFrameSystemDrawn()) {
++    if (!ShouldCustomDrawSystemTitlebar()) {
+     // The default WM_NCPAINT handler under Aero Glass doesn't clear the
+     // nonclient area, so it'll remain the default white color. That area is
+     // invisible initially (covered by the window border) but can become
+@@ -2675,6 +2680,7 @@ void HWNDMessageHandler::OnNCPaint(HRGN rgn) {
+     ::FillRect(dc, &dirty_region, brush);
+     ::DeleteObject(brush);
+     ::ReleaseDC(hwnd(), dc);
++    }
+     SetMsgHandled(FALSE);
+     return;
+   }
+@@ -3112,10 +3118,11 @@ void HWNDMessageHandler::OnWindowPosChanging(WINDOWPOS* window_pos) {
+ 
+       // If the browser window is arranged by Snap, then we should not change
+       // its position but let Windows do it.
++      // Most of the Supermium target platforms have no provision for arranged windows,
++      // so let's ignore them. Pretending otherwise results in strange window handling issues.
+       if (same_monitor &&
+           (incorrect_maximized_bounds || fullscreen_without_hack ||
+-           work_area_changed) &&
+-          !IsWindowArranged(hwnd())) {
++           work_area_changed)) {
+         // A rect for the monitor we're on changed.  Normally Windows notifies
+         // us about this (and thus we're reaching here due to the SetWindowPos()
+         // call in OnSettingChange() above), but with some software (e.g.
+@@ -3732,7 +3739,6 @@ bool HWNDMessageHandler::IsSynthesizedMouseMessage(unsigned int message,
+ }
+ 
+ void HWNDMessageHandler::PerformDwmTransition() {
+-  CHECK(IsFrameSystemDrawn());
+ 
+   dwm_transition_desired_ = false;
+   delegate_->HandleFrameChanged();
+@@ -3743,7 +3749,8 @@ void HWNDMessageHandler::UpdateDwmFrame() {
+   TRACE_EVENT0("ui", "HWNDMessageHandler::UpdateDwmFrame");
+ 
+   gfx::Insets insets;
+-  if (delegate_->GetDwmFrameInsetsInPixels(&insets)) {
++  if (!ShouldCustomDrawSystemTitlebar() &&
++      delegate_->GetDwmFrameInsetsInPixels(&insets)) {
+     // Avoid redundant cross-process DWM calls when the margins haven't changed.
+     if (last_dwm_frame_insets_ == insets) {
+       return;

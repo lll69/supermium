@@ -1,0 +1,1657 @@
+diff --git a/base/allocator/partition_allocator/src/partition_alloc/partition_address_space.cc b/base/allocator/partition_allocator/src/partition_alloc/partition_address_space.cc
+index 368066407245a..37284925bb443 100644
+--- a/base/allocator/partition_allocator/src/partition_alloc/partition_address_space.cc
++++ b/base/allocator/partition_allocator/src/partition_alloc/partition_address_space.cc
+@@ -119,10 +119,34 @@ size_t PartitionAddressSpace::metadata_region_size_ = 0;
+ #endif  // PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)
+ 
+ #if PA_CONFIG(DYNAMICALLY_SELECT_POOL_SIZE)
+-#if !PA_BUILDFLAG(IS_IOS)
+-#error Dynamic pool size is only supported on iOS.
+-#endif
+ bool PartitionAddressSpace::is_core_pool_size_reduced_ = false;
++#if PA_BUILDFLAG(IS_WIN)
++bool PartitionAddressSpace::IsLegacyWindowsVersion() {
++  // Use ::RtlGetVersion instead of ::GetVersionEx or helpers from
++  // VersionHelpers.h because those alternatives change their behavior depending
++  // on whether or not the calling executable has a compatibility manifest
++  // resource. It's better for the allocator to not depend on that to decide the
++  // pool size.
++  // Assume legacy if ::RtlGetVersion is not available or it fails.
++  using RtlGetVersion = LONG(WINAPI*)(OSVERSIONINFOEX*);
++  const RtlGetVersion rtl_get_version = reinterpret_cast<RtlGetVersion>(
++      ::GetProcAddress(::GetModuleHandle(L"ntdll.dll"), "RtlGetVersion"));
++  if (!rtl_get_version) {
++    return true;
++  }
++ 
++  OSVERSIONINFOEX version_info = {};
++  version_info.dwOSVersionInfoSize = sizeof(version_info);
++  if (rtl_get_version(&version_info) != ERROR_SUCCESS) {
++    return true;
++  }
++
++  // Anything prior to Windows 8.1 is considered legacy for the allocator.
++  // Windows 8.1 is major 6 with minor 3.
++  return version_info.dwMajorVersion < 6 ||
++         (version_info.dwMajorVersion == 6 && version_info.dwMinorVersion < 3);
++}
++#elif PA_BUILDFLAG(IS_IOS)
+ 
+ bool PartitionAddressSpace::IsIOSTestProcess() {
+   // On iOS, only applications with the extended virtual addressing entitlement
+@@ -156,6 +180,7 @@ bool PartitionAddressSpace::IsIOSTestProcess() {
+ 
+   return has_suffix("Runner") || has_suffix("ios_web_view_inttests");
+ }
++#endif  // PA_BUILDFLAG(IS_IOS)
+ #endif  // PA_CONFIG(DYNAMICALLY_SELECT_POOL_SIZE)
+ 
+ void PartitionAddressSpace::Init() {
+@@ -182,7 +207,7 @@ void PartitionAddressSpace::Init() {
+   // conveniently taken care of by the last guard page of the regular pool.
+   setup_.regular_pool_base_address_ = map_base_pages(glued_pool_sizes);
+ 
+-#if PA_CONFIG(DYNAMICALLY_SELECT_POOL_SIZE)
++#if PA_BUILDFLAG(IS_IOS)
+   // On iOS we attempt to decrease the pool size, so we can collect metrics on
+   // frequency and to "gracefully" handle such a situation, since we have
+   // evidence it sometimes occurs.
+@@ -198,7 +223,7 @@ void PartitionAddressSpace::Init() {
+     setup_.regular_pool_base_address_ = map_base_pages(glued_pool_sizes);
+     // Nothing to free since we failed originally.
+   }
+-#endif
++#endif // PA_BUILDFLAG(IS_IOS)
+ 
+ #if PA_BUILDFLAG(IS_ANDROID)
+   // On Android, Adreno-GSL library fails to mmap if we snatch address
+diff --git a/base/allocator/partition_allocator/src/partition_alloc/partition_address_space.h b/base/allocator/partition_allocator/src/partition_alloc/partition_address_space.h
+index 6a4740752abc9..1a69ba9962035 100644
+--- a/base/allocator/partition_allocator/src/partition_alloc/partition_address_space.h
++++ b/base/allocator/partition_allocator/src/partition_alloc/partition_address_space.h
+@@ -139,6 +139,7 @@ class PA_COMPONENT_EXPORT(PARTITION_ALLOC) PartitionAddressSpace {
+   PA_ALWAYS_INLINE static bool IsConfigurablePoolInitialized();
+ 
+ #if PA_CONFIG(DYNAMICALLY_SELECT_POOL_SIZE)
++  static bool is_core_pool_size_reduced_;
+   PA_ALWAYS_INLINE static bool IsCorePoolSizeReduced() {
+     return is_core_pool_size_reduced_;
+   }
+@@ -261,25 +262,16 @@ class PA_COMPONENT_EXPORT(PARTITION_ALLOC) PartitionAddressSpace {
+   void* operator new(size_t, void*) = delete;
+ 
+ #if PA_CONFIG(DYNAMICALLY_SELECT_POOL_SIZE)
+- private:
+-  static bool IsIOSTestProcess();
+-  static bool is_core_pool_size_reduced_;
+-
+- public:
++#if PA_BUILDFLAG(IS_IOS)
++static bool IsIOSTestProcess();
++static constexpr size_t kCorePoolSizeForIOSTestProcess = kGiB / 4;
++#elif PA_BUILDFLAG(IS_WIN)
++static bool IsLegacyWindowsVersion();
+   PA_ALWAYS_INLINE static size_t CorePoolSize() {
+-    if (IsIOSTestProcess()) {
+-      return kCorePoolSizeForIOSTestProcess;
+-    }
+-    if (is_core_pool_size_reduced_) {
+-      return kCorePoolSizeForIOSReducedPoolSize;
+-    }
+-    return kCorePoolSize;
+-  }
+-#else
+-  // The pool sizes should be as large as maximum whenever possible.
+-  PA_ALWAYS_INLINE static constexpr size_t CorePoolSize() {
+-    return kCorePoolSize;
++    return IsLegacyWindowsVersion() ? kCorePoolSizeForLegacyWindows
++                                    : kCorePoolSize;
+   }
++#endif
+ #endif  // PA_CONFIG(DYNAMICALLY_SELECT_POOL_SIZE)
+ 
+   // Almost always equals to `CorePoolSize()`, except on iOS.
+@@ -320,6 +312,15 @@ class PA_COMPONENT_EXPORT(PARTITION_ALLOC) PartitionAddressSpace {
+   // ArrayBuffers be located inside of it.
+   static constexpr size_t kCorePoolSize = kPoolMaxSize;
+   static_assert(base::bits::HasSingleBit(kCorePoolSize));
++#if PA_CONFIG(DYNAMICALLY_SELECT_POOL_SIZE)
++  // We can't afford pool sizes as large as kPoolMaxSize on Windows <8.1 (see
++  // crbug.com/1101421 and crbug.com/1217759).
++  static constexpr size_t kCorePoolSizeForLegacyWindows = 4 * kGiB;
++  static constexpr size_t kBRPPoolSizeForLegacyWindows = 4 * kGiB;
++  static_assert(kCorePoolSizeForLegacyWindows < kCorePoolSize);
++  static_assert(base::bits::HasSingleBit(kCorePoolSizeForLegacyWindows));
++  static_assert(base::bits::HasSingleBit(kBRPPoolSizeForLegacyWindows));
++#endif  // PA_CONFIG(DYNAMICALLY_SELECT_POOL_SIZE)
+ #if PA_BUILDFLAG(ENABLE_THREAD_ISOLATION)
+   static constexpr size_t kThreadIsolatedPoolSize = kGiB / 4;
+   static_assert(base::bits::HasSingleBit(kThreadIsolatedPoolSize));
+diff --git a/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_config.h b/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_config.h
+index 58b66e834a6af..110301a75c6ed 100644
+--- a/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_config.h
++++ b/base/allocator/partition_allocator/src/partition_alloc/partition_alloc_config.h
+@@ -35,7 +35,7 @@ static_assert(sizeof(void*) == 8, "");
+ static_assert(sizeof(void*) != 8, "");
+ #endif  // PA_CONFIG(HAS_64_BITS_POINTERS)
+ 
+-#if PA_BUILDFLAG(HAS_64_BIT_POINTERS) && PA_BUILDFLAG(IS_IOS)
++#if PA_BUILDFLAG(HAS_64_BIT_POINTERS) && (PA_BUILDFLAG(IS_IOS) || PA_BUILDFLAG(IS_WIN))
+ // Allow PA to select an alternate pool size at run-time before initialization,
+ // rather than using a single constexpr value.
+ //
+@@ -43,10 +43,14 @@ static_assert(sizeof(void*) != 8, "");
+ // (see crbug.com/1250788).
+ //
+ // This setting is specific to 64-bit, as 32-bit has a different implementation.
++//
++// This is needed on Windows, because OS versions <8.1 incur commit charge even
++// on reserved address space, thus don't handle large pools well (see
++// crbug.com/1101421 and crbug.com/1217759).
+ #define PA_CONFIG_DYNAMICALLY_SELECT_POOL_SIZE() 1
+ #else
+ #define PA_CONFIG_DYNAMICALLY_SELECT_POOL_SIZE() 0
+-#endif  // PA_BUILDFLAG(HAS_64_BIT_POINTERS) && PA_BUILDFLAG(IS_IOS)
++#endif  // PA_BUILDFLAG(HAS_64_BIT_POINTERS) && (PA_BUILDFLAG(IS_IOS) || PA_BUILDFLAG(IS_WIN))
+ 
+ // POSIX is not only UNIX, e.g. macOS and other OSes. We do use Linux-specific
+ // features such as futex(2).
+diff --git a/base/base_paths_win.cc b/base/base_paths_win.cc
+index 741638e9b8bd3..d34ce235d8bfd 100644
+--- a/base/base_paths_win.cc
++++ b/base/base_paths_win.cc
+@@ -233,9 +233,8 @@ bool PathProviderWin(int key, FilePath* result) {
+           break;
+         }
+       }
+-      // Failing that, use C:\Program Files or C:\Program Files (x86) for older
+-      // versions of Windows 10.
+-      if (!PathService::Get(DIR_PROGRAM_FILES, &cur) || !PathIsWritable(cur)) {
++      // Failing that, use Temporary Internet Files on older versions of Windows.
++      if (!PathService::Get(DIR_IE_INTERNET_CACHE, &cur) || !PathIsWritable(cur)) {
+         return false;
+       }
+       break;
+diff --git a/base/memory/platform_shared_memory_region_win.cc b/base/memory/platform_shared_memory_region_win.cc
+index 06c76612599ea..5ee0aa41c2851 100644
+--- a/base/memory/platform_shared_memory_region_win.cc
++++ b/base/memory/platform_shared_memory_region_win.cc
+@@ -25,6 +25,7 @@
+ #include "base/threading/platform_thread.h"
+ #include "base/time/time.h"
+ #include "base/types/expected.h"
++#include "base/win/windows_version.h"
+ #include "partition_alloc/oom.h"
+ #include "partition_alloc/page_allocator.h"
+ 
+@@ -318,12 +319,11 @@ PlatformSharedMemoryRegion PlatformSharedMemoryRegion::Create(Mode mode,
+     return {};
+   }
+ 
+-  std::u16string name;
+   SECURITY_ATTRIBUTES sa = {sizeof(sa), &sd, FALSE};
+   // Ask for the file mapping with reduced permisions to avoid passing the
+   // access control permissions granted by default into unpriviledged process.
+   HANDLE h = CreateFileMappingWithReducedPermissions(
+-      &sa, rounded_size, name.empty() ? nullptr : as_wcstr(name));
++      &sa, rounded_size, nullptr);
+   if (h == nullptr) {
+     // SetSharedMemoryRegionCreationFailureCrashKey() is invoked inside
+     // CreateFileMappingWithReducedPermissions().
+@@ -361,7 +361,7 @@ PlatformSharedMemoryRegion::CheckPlatformHandlePermissionsCorrespondToMode(
+   bool is_read_only = !success;
+   bool expected_read_only = mode == Mode::kReadOnly;
+ 
+-  if (is_read_only != expected_read_only) {
++  if (win::GetVersion() >= win::Version::WIN8_1 && is_read_only != expected_read_only) {
+     return unexpected(expected_read_only ? TakeError::kExpectedReadOnlyButNot
+                                          : TakeError::kExpectedWritableButNot);
+   }
+diff --git a/base/metrics/field_trial.cc b/base/metrics/field_trial.cc
+index 019fdb4f11d2a..aaeb8624d1a88 100644
+--- a/base/metrics/field_trial.cc
++++ b/base/metrics/field_trial.cc
+@@ -33,6 +33,7 @@
+ #include "base/strings/stringprintf.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/unguessable_token.h"
++#include "base/win/windows_version.h"
+ #include "build/build_config.h"
+ 
+ #if BUILDFLAG(USE_BLINK)
+@@ -655,7 +656,11 @@ void FieldTrialList::CreateTrialsInChildProcess(const CommandLine& cmd_line) {
+     SharedMemoryError result = CreateTrialsFromSwitchValue(switch_value);
+     SCOPED_CRASH_KEY_NUMBER("FieldTrialList", "SharedMemoryError",
+                             static_cast<int>(result));
+-    CHECK_EQ(result, SharedMemoryError::kNoError);
++    // Unfortunately, XP has an issue with shared memory allocations to unsandboxed processes.
++    // This means that the sandbox (or in-process-gpu/single-process) are needed to propagate all feature info.
++    if (base::win::GetVersion() >= base::win::Version::VISTA) {
++      CHECK_EQ(result, SharedMemoryError::kNoError);
++    }
+   }
+ #endif  // BUILDFLAG(USE_BLINK)
+ }
+diff --git a/base/metrics/histogram_shared_memory.cc b/base/metrics/histogram_shared_memory.cc
+index 7ad60de7dbdfe..af1ee157f8a4b 100644
+--- a/base/metrics/histogram_shared_memory.cc
++++ b/base/metrics/histogram_shared_memory.cc
+@@ -25,7 +25,7 @@
+ 
+ #if BUILDFLAG(IS_WIN)
+ #include <windows.h>
+-
++#include "base/win/windows_version.h"
+ #include "base/win/win_util.h"
+ #endif
+ 
+@@ -119,6 +119,8 @@ bool HistogramSharedMemory::PassOnCommandLineIsEnabled(int process_type) {
+   return (FeatureList::IsEnabled(kPassHistogramSharedMemoryOnLaunch)
+ #if BUILDFLAG(IS_ANDROID)
+           && process_type != PROCESS_TYPE_UTILITY
++#elif BUILDFLAG(IS_WIN)
++          && base::win::GetVersion() >= base::win::Version::VISTA
+ #endif
+   );
+ }
+diff --git a/base/process/launch_win.cc b/base/process/launch_win.cc
+index f1392713e4376..f2167d46e81a0 100644
+--- a/base/process/launch_win.cc
++++ b/base/process/launch_win.cc
+@@ -293,7 +293,7 @@ Process LaunchProcess(const CommandLine::StringType& cmdline,
+   }
+ 
+   // Count PROC_THREAD_ATTRIBUTE_HANDLE_LIST.
+-  if (!options.handles_to_inherit.empty()) {
++  if (!options.handles_to_inherit.empty() && base::win::GetVersion() >= base::win::Version::VISTA) {
+     ++attribute_count;
+   }
+ 
+@@ -322,7 +322,11 @@ Process LaunchProcess(const CommandLine::StringType& cmdline,
+ 
+   // Set PROC_THREAD_ATTRIBUTE_HANDLE_LIST.
+   bool inherit_handles = options.inherit_mode == LaunchOptions::Inherit::kAll;
+-  if (!options.handles_to_inherit.empty()) {
++  if (!options.handles_to_inherit.empty() && 
++	  base::win::GetVersion() < base::win::Version::VISTA) {
++	  inherit_handles = true;
++  }
++  if (!options.handles_to_inherit.empty() && base::win::GetVersion() >= base::win::Version::VISTA) {
+     DCHECK_GT(attribute_count, 0u);
+     DCHECK_EQ(options.inherit_mode, LaunchOptions::Inherit::kSpecific);
+ 
+diff --git a/base/process/process_metrics_win.cc b/base/process/process_metrics_win.cc
+index 3a0400b75aeee..e402bb1f84a9f 100644
+--- a/base/process/process_metrics_win.cc
++++ b/base/process/process_metrics_win.cc
+@@ -226,7 +226,7 @@ ProcessMetrics::ProcessMetrics(ProcessHandle process) {
+   HANDLE duplicate_handle = INVALID_HANDLE_VALUE;
+   BOOL result = ::DuplicateHandle(::GetCurrentProcess(), process,
+                                   ::GetCurrentProcess(), &duplicate_handle,
+-                                  PROCESS_QUERY_LIMITED_INFORMATION, FALSE, 0);
++                                  PROCESS_QUERY_INFORMATION, FALSE, 0);
+   if (!result) {
+     // Even with PROCESS_QUERY_LIMITED_INFORMATION, DuplicateHandle can fail
+     // with ERROR_ACCESS_DENIED. And it's always possible to run out of handles.
+diff --git a/base/system/sys_info_win.cc b/base/system/sys_info_win.cc
+index ba704438084af..034ab3f717d20 100644
+--- a/base/system/sys_info_win.cc
++++ b/base/system/sys_info_win.cc
+@@ -137,6 +137,10 @@ int SysInfo::NumberOfProcessors() {
+ 
+ // static
+ int SysInfo::NumberOfEfficientProcessorsImpl() {
++  // No efficiency support before Windows 10.
++  if (win::GetVersion() < win::Version::WIN10)
++	  return 0;
++
+   std::vector<BYTE> efficiency_classes = GetCoreEfficiencyClasses();
+   if (efficiency_classes.empty()) {
+     return 0;
+diff --git a/chrome/browser/os_crypt/app_bound_encryption_provider_win.cc b/chrome/browser/os_crypt/app_bound_encryption_provider_win.cc
+index 45e91f10d8139..5447a79a1fd78 100644
+--- a/chrome/browser/os_crypt/app_bound_encryption_provider_win.cc
++++ b/chrome/browser/os_crypt/app_bound_encryption_provider_win.cc
+@@ -19,6 +19,7 @@
+ #include "base/task/task_traits.h"
+ #include "base/task/thread_pool.h"
+ #include "base/types/expected.h"
++#include "base/win/windows_version.h"
+ #include "chrome/browser/os_crypt/app_bound_encryption_win.h"
+ #include "components/crash/core/common/crash_key.h"
+ #include "components/os_crypt/async/common/algorithm.mojom.h"
+@@ -259,7 +260,8 @@ void AppBoundEncryptionProviderWin::GenerateAndPersistNewKeyInternal(
+ 
+ bool AppBoundEncryptionProviderWin::UseForEncryption() {
+   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+-  return support_level_ == os_crypt::SupportLevel::kSupported;
++  return support_level_ == os_crypt::SupportLevel::kSupported
++                           && base::win::GetVersion() >= base::win::Version::WIN10;
+ }
+ 
+ bool AppBoundEncryptionProviderWin::IsCompatibleWithOsCryptSync() {
+diff --git a/components/embedder_support/user_agent_utils.cc b/components/embedder_support/user_agent_utils.cc
+index 608bea5cb3864..f933adec2e23d 100644
+--- a/components/embedder_support/user_agent_utils.cc
++++ b/components/embedder_support/user_agent_utils.cc
+@@ -16,8 +16,11 @@
+ #include "base/command_line.h"
+ #include "base/compiler_specific.h"
+ #include "base/feature_list.h"
++#include "base/files/file_path.h"
++#include "base/files/file_util.h"
+ #include "base/logging.h"
+ #include "base/no_destructor.h"
++#include "base/path_service.h"
+ #include "base/strings/strcat.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
+@@ -26,6 +29,7 @@
+ #include "base/version.h"
+ #include "build/branding_buildflags.h"
+ #include "build/build_config.h"
++#include "chrome/common/chrome_paths.h"
+ #include "components/embedder_support/pref_names.h"
+ #include "components/embedder_support/switches.h"
+ #include "components/policy/core/common/policy_pref_names.h"
+@@ -58,6 +62,59 @@ namespace embedder_support {
+ 
+ namespace {
+ 
++typedef enum UACHSpoofType{
++	UA,
++	UACHCustomName,
++	UACHCustomVersion,
++	UACHCustomFullVersion,
++	UACHCustomPlatform,
++	UACHCustomPlatformVersion,
++	UACHCustomModel,
++	UACHCustomArchitecture,
++	UACHCustomBitness,
++	UACHCustomIsMobile,
++	UACHCustomWOW64
++}UACHSpoofType;
++
++std::vector<std::string> split(const std::string& str, const std::string& delimiter) {
++    std::vector<std::string> tokens;
++    size_t start = 0;
++    size_t end = str.find(delimiter);
++
++    while (end != std::string::npos) {
++        tokens.push_back(str.substr(start, end - start));
++        start = end + delimiter.length();
++        end = str.find(delimiter, start);
++    }
++
++    tokens.push_back(str.substr(start, end - start)); // add the last token
++    return tokens;
++}
++
++// Function to parse the file
++std::string parseFile(UACHSpoofType SpoofTarget) {
++    base::FilePath userdir;
++    if(!base::PathService::Get(chrome::DIR_USER_DATA, &userdir)) {
++        return std::string(); // Things are seriously wrong if the user data directory cannot be located.
++	}
++    const base::FilePath userpath = userdir.Append(FILE_PATH_LITERAL("uao"));
++    std::optional<int64_t> file_size = base::GetFileSize(userpath);
++    if(!file_size.has_value()) {
++        return std::string();
++	}
++    std::vector<char> buf(file_size.value());
++    base::ReadFile(userpath, reinterpret_cast<char*>(buf.data()), file_size.value());
++    std::string bufstr = std::string(reinterpret_cast<char*>(buf.data()));
++
++    std::vector<std::string> fields = split(bufstr, ";;;");
++    if (fields.size() > SpoofTarget) {
++	   return fields[SpoofTarget];
++    } else {
++       LOG(0) << "UAO file invalid; all fields are not present";
++       return std::string();
++    }
++}
++
+ #if BUILDFLAG(IS_WIN)
+ 
+ // The registry key where the UniversalApiContract version value can be read
+@@ -78,7 +135,7 @@ constexpr wchar_t kUniversalApiContractName[] =
+ // to rely on querying the IsApiContractPresentByMajor function used by
+ // user_agent_utils_unittest.cc.
+ const int kHighestKnownUniversalApiContractVersion = 19;
+-
++/*
+ int GetPreRS5UniversalApiContractVersion() {
+   // This calls Kernel32Version() to get the real non-spoofable version (as
+   // opposed to base::win::GetVersion() which as of writing this seems to return
+@@ -107,7 +164,7 @@ int GetPreRS5UniversalApiContractVersion() {
+   // RS5.
+   NOTREACHED();
+ }
+-
++*/
+ // Returns the UniversalApiContract version number, which is available for
+ // Windows versions greater than RS5. Otherwise, returns 0.
+ const std::string& GetUniversalApiContractVersion() {
+@@ -122,7 +179,7 @@ const std::string& GetUniversalApiContractVersion() {
+         int minor_version = 0;
+         if (base::win::OSInfo::Kernel32Version() <=
+             base::win::Version::WIN10_RS4) {
+-          major_version = GetPreRS5UniversalApiContractVersion();
++          major_version = kHighestKnownUniversalApiContractVersion;
+         } else {
+           base::win::RegKey version_key(
+               HKEY_LOCAL_MACHINE, kWindowsRuntimeWellKnownContractsRegKeyName,
+@@ -163,15 +220,27 @@ const blink::UserAgentBrandList GetUserAgentBrandList(
+   bool parse_result = base::StringToInt(major_version, &major_version_number);
+   DCHECK(parse_result);
+   std::optional<std::string> brand;
++  std::string custom_brand;
++  custom_brand = parseFile(UACHCustomName);
+ #if !BUILDFLAG(CHROMIUM_BRANDING)
+   brand = version_info::GetProductName();
++#else
++  if (!custom_brand.empty())
++	brand = custom_brand;
++  else
++    brand = std::string("Google Chrome");
+ #endif
+ 
++  std::string custom_brand_version = parseFile(UACHCustomVersion);
+   std::string brand_version =
+       output_version_type == blink::UserAgentBrandVersionType::kFullVersion
+           ? full_version
+           : major_version;
+ 
++  if(!custom_brand_version.empty()){
++	  brand_version = custom_brand_version;
++  }
++
+   return GenerateBrandVersionList(major_version_number, brand, brand_version,
+                                   output_version_type,
+                                   additional_brand_version);
+@@ -468,6 +537,11 @@ std::string GetUserAgent() {
+     return custom_ua.value();
+   }
+ 
++  custom_ua = parseFile(UA);
++  if (!custom_ua->empty()) {
++    return custom_ua.value();
++  }
++
+   return GetUserAgentInternal();
+ }
+ 
+diff --git a/components/system_cpu/cpu_probe_win.cc b/components/system_cpu/cpu_probe_win.cc
+index 1a11bf5c4c3e5..85bf43935ed6c 100644
+--- a/components/system_cpu/cpu_probe_win.cc
++++ b/components/system_cpu/cpu_probe_win.cc
+@@ -92,7 +92,7 @@ std::optional<CpuSample> CpuProbeWin::BlockingTaskRunnerHelper::Update() {
+     const auto* query_info = is_running_in_vm
+                                  ? kHypervisorLogicalProcessorCounter
+                                  : kProcessorCounter;
+-    pdh_status = PdhAddEnglishCounter(cpu_query_.get(), query_info, NULL,
++    pdh_status = PdhAddCounter(cpu_query_.get(), query_info, NULL,
+                                       &cpu_percent_utilization_);
+ 
+     // When Chrome is running under a different hypervisor, we can add the
+@@ -102,14 +102,14 @@ std::optional<CpuSample> CpuProbeWin::BlockingTaskRunnerHelper::Update() {
+       pdh_status = PdhCollectQueryData(cpu_query_.get());
+       if (pdh_status != ERROR_SUCCESS) {
+         query_info = kProcessorCounter;
+-        pdh_status = PdhAddEnglishCounter(cpu_query_.get(), query_info, NULL,
++        pdh_status = PdhAddCounter(cpu_query_.get(), query_info, NULL,
+                                           &cpu_percent_utilization_);
+       }
+     }
+ 
+     if (pdh_status != ERROR_SUCCESS) {
+       cpu_query_.reset();
+-      LOG(ERROR) << "PdhAddEnglishCounter failed for '" << query_info
++      LOG(ERROR) << "PdhAddCounter failed for '" << query_info
+                  << "': " << logging::SystemErrorCodeToString(pdh_status);
+       return std::nullopt;
+     }
+diff --git a/components/update_client/background_downloader_win.cc b/components/update_client/background_downloader_win.cc
+index 517cab62f9ba0..2e0f4cf1e540b 100644
+--- a/components/update_client/background_downloader_win.cc
++++ b/components/update_client/background_downloader_win.cc
+@@ -423,6 +423,8 @@ void CleanupJob(const Microsoft::WRL::ComPtr<IBackgroundCopyJob>& job) {
+ }
+ 
+ void CheckIsMta() {
++  // Enforce this as set.
++  ::CoInitializeEx(NULL, COINIT_MULTITHREADED);
+   CHECK_EQ(base::win::GetComApartmentTypeForThread(),
+            base::win::ComApartmentType::MTA);
+ }
+diff --git a/crypto/process_bound_string.cc b/crypto/process_bound_string.cc
+index 3d60dd10ba60e..eba4278704734 100644
+--- a/crypto/process_bound_string.cc
++++ b/crypto/process_bound_string.cc
+@@ -14,6 +14,7 @@
+ 
+ #include "base/process/memory.h"
+ #include "base/trace_event/trace_event.h"
++#include "base/win/windows_version.h"
+ #else
+ #include "third_party/boringssl/src/include/openssl/mem.h"
+ #endif  // BUILDFLAG(IS_WIN)
+@@ -42,7 +43,8 @@ size_t MaybeRoundUp(size_t size) {
+ bool MaybeEncryptBuffer(base::span<uint8_t> buffer) {
+ #if BUILDFLAG(IS_WIN)
+   TRACE_EVENT0(kTraceCategory, "ProcessBoundString::EncryptBuffer");
+-  if (::CryptProtectMemory(buffer.data(), buffer.size(),
++  if (base::win::GetVersion() > base::win::Version::XP &&
++      ::CryptProtectMemory(buffer.data(), buffer.size(),
+                            CRYPTPROTECTMEMORY_SAME_PROCESS)) {
+     return true;
+   }
+@@ -53,7 +55,8 @@ bool MaybeEncryptBuffer(base::span<uint8_t> buffer) {
+ bool MaybeDecryptBuffer(base::span<uint8_t> buffer) {
+ #if BUILDFLAG(IS_WIN)
+   TRACE_EVENT0(kTraceCategory, "ProcessBoundString::DecryptBuffer");
+-  if (::CryptUnprotectMemory(buffer.data(), buffer.size(),
++  if (base::win::GetVersion() > base::win::Version::XP &&
++      ::CryptProtectMemory(buffer.data(), buffer.size(),
+                              CRYPTPROTECTMEMORY_SAME_PROCESS)) {
+     return true;
+   }
+diff --git a/crypto/unexportable_key_win.cc b/crypto/unexportable_key_win.cc
+index 64ad2bdb88203..e9a650a686752 100644
+--- a/crypto/unexportable_key_win.cc
++++ b/crypto/unexportable_key_win.cc
+@@ -617,6 +617,11 @@ class UnexportableKeyProviderWin : public UnexportableKeyProvider {
+     ScopedNCryptProvider provider;
+     {
+       SCOPED_MAY_LOAD_LIBRARY_AT_BACKGROUND_PRIORITY();
++
++      if(!::LoadLibraryW(L"ncrypt.dll")) {
++          return std::nullopt;
++      }
++
+       SECURITY_STATUS status = NCryptOpenStorageProvider(
+           ScopedNCryptProvider::Receiver(provider).get(),
+           GetWindowsIdentifierForProvider(provider_type_), /*flags=*/0);
+@@ -641,6 +646,11 @@ class UnexportableKeyProviderWin : public UnexportableKeyProvider {
+     ScopedNCryptProvider provider;
+     {
+       SCOPED_MAY_LOAD_LIBRARY_AT_BACKGROUND_PRIORITY();
++
++      if(!::LoadLibraryW(L"ncrypt.dll")) {
++          return std::nullopt;
++      }
++
+       SECURITY_STATUS status = NCryptOpenStorageProvider(
+           ScopedNCryptProvider::Receiver(provider).get(),
+           GetWindowsIdentifierForProvider(provider_type_), /*flags=*/0);
+@@ -933,6 +943,11 @@ class VirtualUnexportableKeyProviderWin
+     ScopedNCryptProvider provider;
+     {
+       SCOPED_MAY_LOAD_LIBRARY_AT_BACKGROUND_PRIORITY();
++
++      if(!::LoadLibraryW(L"ncrypt.dll")) {
++          return std::nullopt;
++      }
++
+       SECURITY_STATUS status = NCryptOpenStorageProvider(
+           ScopedNCryptProvider::Receiver(provider).get(),
+           MS_KEY_STORAGE_PROVIDER, /*dwFlags=*/0);
+@@ -955,6 +970,11 @@ class VirtualUnexportableKeyProviderWin
+     ScopedNCryptProvider provider;
+     {
+       SCOPED_MAY_LOAD_LIBRARY_AT_BACKGROUND_PRIORITY();
++
++      if(!::LoadLibraryW(L"ncrypt.dll")) {
++          return nullptr;
++      }
++
+       SECURITY_STATUS status = NCryptOpenStorageProvider(
+           ScopedNCryptProvider::Receiver(provider).get(),
+           MS_KEY_STORAGE_PROVIDER, /*dwFlags=*/0);
+diff --git a/mojo/core/embedder/embedder.cc b/mojo/core/embedder/embedder.cc
+index 2a53e85121870..a3d6cf4f2ba6e 100644
+--- a/mojo/core/embedder/embedder.cc
++++ b/mojo/core/embedder/embedder.cc
+@@ -42,6 +42,10 @@
+ #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) ||
+         // BUILDFLAG(IS_ANDROID)
+ 
++#if BUILDFLAG(IS_WIN)
++#include "base/win/windows_version.h"
++#endif
++
+ namespace mojo::core {
+ 
+ namespace {
+@@ -107,7 +111,16 @@ void InitFeatures() {
+ 
+ void EnableMojoIpcz() {
+ #if BUILDFLAG(MOJO_SUPPORT_LEGACY_CORE)
+-  g_mojo_ipcz_enabled.store(true, std::memory_order_release);
++#if BUILDFLAG(IS_WIN)
++  // TODO(https://crbug.com/1299283): Sandboxed processes on Windows versions
++  // older than 8.1 require some extra (not yet implemented... err... never implemented) setup for ipcz to
++  // work properly. This is omitted for early experimentation.
++  const bool kIsIpczSupported =
++      base::win::GetVersion() >= base::win::Version::WIN8_1;
++#else
++  const bool kIsIpczSupported = true;
++#endif
++  g_mojo_ipcz_enabled.store(kIsIpczSupported, std::memory_order_release);
+ #endif
+ }
+ 
+diff --git a/sandbox/policy/sandbox_type.cc b/sandbox/policy/sandbox_type.cc
+index 1b87649d48f1c..c3cb672ca7ce3 100644
+--- a/sandbox/policy/sandbox_type.cc
++++ b/sandbox/policy/sandbox_type.cc
+@@ -18,6 +18,10 @@
+ #include "media/media_buildflags.h"  // nogncheck
+ #endif
+ 
++#if BUILDFLAG(IS_WIN)
++#include "base/win/windows_version.h"
++#endif
++
+ namespace sandbox::policy {
+ 
+ namespace {
+@@ -192,15 +196,24 @@ sandbox::mojom::Sandbox SandboxTypeFromCommandLine(
+   if (process_type.empty())
+     return Sandbox::kNoSandbox;
+ 
+-  if (process_type == switches::kRendererProcess)
++  if (process_type == switches::kRendererProcess) {
++    if (command_line.HasSwitch("legacy-sandbox"))
++      return Sandbox::kNoSandbox;
+     return Sandbox::kRenderer;
++  }
+ 
+   if (process_type == switches::kUtilityProcess) {
++#if BUILDFLAG(IS_WIN)
++    if (base::win::GetVersion() < base::win::Version::WIN10) {
++        return Sandbox::kNoSandbox;
++    }
++#endif
+     return UtilitySandboxTypeFromString(
+         command_line.GetSwitchValueASCII(switches::kServiceSandboxType));
+   }
+   if (process_type == switches::kGpuProcess) {
+-    if (command_line.HasSwitch(switches::kDisableGpuSandbox))
++    if (command_line.HasSwitch(switches::kDisableGpuSandbox) ||
++        command_line.HasSwitch("legacy-sandbox"))
+       return Sandbox::kNoSandbox;
+     return Sandbox::kGpu;
+   }
+diff --git a/sandbox/policy/win/sandbox_win.cc b/sandbox/policy/win/sandbox_win.cc
+index 1d798fecab6c7..9ec89be806e75 100644
+--- a/sandbox/policy/win/sandbox_win.cc
++++ b/sandbox/policy/win/sandbox_win.cc
+@@ -223,7 +223,9 @@ ResultCode AddDefaultConfigForSandboxedProcess(TargetConfig* config) {
+     return result;
+ 
+   config->SetLockdownDefaultDacl();
+-  config->AddKernelObjectToClose(HandleToClose::kDeviceApi);
++  // Win8+ adds a device DeviceApi that we don't need.
++  if (base::win::GetVersion() >= base::win::Version::WIN8)
++    config->AddKernelObjectToClose(HandleToClose::kDeviceApi);
+   config->SetDesktop(Desktop::kAlternateWinstation);
+ 
+   return SBOX_ALL_OK;
+@@ -627,12 +629,18 @@ ResultCode LaunchWithoutSandbox(
+   // on process shutdown, in which case TerminateProcess can fail. See
+   // https://crbug.com/820996.
+   if (delegate->ShouldUnsandboxedRunInJob()) {
++    BOOL in_job = true;
++    // Prior to Windows 8 nested jobs aren't possible.
++    if (base::win::GetVersion() >= base::win::Version::WIN8 ||
++        (::IsProcessInJob(::GetCurrentProcess(), nullptr, &in_job) &&
++         !in_job)) {
+     static base::NoDestructor<base::win::ScopedHandle> job_object(
+         CreateUnsandboxedJob());
+     if (!job_object->is_valid()) {
+       return SBOX_ERROR_CANNOT_INIT_JOB;
+     }
+     options.job_handle = job_object->get();
++    }
+   }
+ 
+   // Chromium binaries are marked as CET Compatible but some processes
+@@ -725,6 +733,9 @@ void SandboxWin::AddBaseHandleClosePolicy(TargetConfig* config) {
+ ResultCode SandboxWin::AddAppContainerPolicy(TargetConfig* config,
+                                              base::wcstring_view sid) {
+   DCHECK(!config->IsConfigured());
++  // Win32k Lockdown is supported on Windows 8+.
++  if (base::win::GetVersion() < base::win::Version::WIN8)
++    return SBOX_ALL_OK;
+   if (IsAppContainerEnabled()) {
+     ResultCode result = config->SetLowBox(sid);
+     if (result != SBOX_ALL_OK) {
+diff --git a/sandbox/win/src/broker_services.cc b/sandbox/win/src/broker_services.cc
+index 0b3de828ecec1..861fda525b26a 100644
+--- a/sandbox/win/src/broker_services.cc
++++ b/sandbox/win/src/broker_services.cc
+@@ -553,7 +553,11 @@ BrokerServicesBase::PreSpawnTarget(PolicyBase* policy_base) {
+     startup_info->SetAppContainer(container);
+   }
+ 
+-  startup_info->AddJobToAssociate(policy_base->GetJobHandle());
++  // On Win10, jobs are associated via startup_info.
++  if (base::win::GetVersion() >= base::win::Version::WIN10 &&
++      policy_base->HasJob()) {
++    startup_info->AddJobToAssociate(policy_base->GetJobHandle());
++  }
+ 
+   if (!startup_info->BuildStartupInformation()) {
+     return base::unexpected(SBOX_ERROR_PROC_THREAD_ATTRIBUTES);
+diff --git a/sandbox/win/src/handle_closer_agent.cc b/sandbox/win/src/handle_closer_agent.cc
+index 047fe689715a1..996329a077206 100644
+--- a/sandbox/win/src/handle_closer_agent.cc
++++ b/sandbox/win/src/handle_closer_agent.cc
+@@ -18,6 +18,7 @@
+ #include "base/win/static_constants.h"
+ #include "base/win/win_util.h"
+ #include "base/win/windows_handle_util.h"
++#include "base/win/windows_version.h"
+ #include "sandbox/win/src/heap_helper.h"
+ #include "sandbox/win/src/win_utils.h"
+ 
+@@ -166,6 +167,13 @@ bool HandleCloserAgent::CloseHandles() {
+     return false;
+   }
+ 
++  if (base::win::GetVersion() < base::win::Version::WIN8_1)  {
++	if(GetCurrentProcessHandlesWin7())
++		return true;
++	else
++		return false;
++  }
++
+   // The system call will return only handles up to the buffer size so add a
+   // margin of error of an additional 1000 handles.
+   auto handles = base::HeapArray<uint32_t>::WithSize(handle_count + 1000);
+diff --git a/sandbox/win/src/interception.cc b/sandbox/win/src/interception.cc
+index d074722947cb1..23d2526d8e5d4 100644
+--- a/sandbox/win/src/interception.cc
++++ b/sandbox/win/src/interception.cc
+@@ -21,6 +21,7 @@
+ #include "base/rand_util.h"
+ #include "base/scoped_native_library.h"
+ #include "base/win/pe_image.h"
++#include "base/win/windows_version.h"
+ #include "sandbox/win/src/interception_internal.h"
+ #include "sandbox/win/src/interceptors.h"
+ #include "sandbox/win/src/internal_types.h"
+@@ -394,7 +395,39 @@ InterceptionManager::PatchClientFunctions(DllInterceptionData* thunks,
+   patch.dll_data.num_thunks = 0;
+   patch.dll_data.used_bytes = offsetof(DllInterceptionData, thunks);
+ 
+-  ServiceResolverThunk thunk(child_->Process(), /*relaxed=*/true);
++  std::unique_ptr<ServiceResolverThunk> thunk;
++#if defined(_WIN64)
++  thunk = std::make_unique<ServiceResolverThunk>(child_->Process(), true);
++#else
++  DWORD base_code = 0;
++  DWORD bytes_read = 0;
++  base::win::OSInfo* os_info = base::win::OSInfo::GetInstance();
++  base::win::Version real_os_version = os_info->Kernel32Version();
++  if (os_info->IsWowX86OnAMD64()) {
++    if (real_os_version >= base::win::Version::WIN10)
++      thunk.reset(new Wow64W10ResolverThunk(child_->Process(), true));
++    else if (real_os_version >= base::win::Version::WIN8)
++      thunk.reset(new Wow64W8ResolverThunk(child_->Process(), true));
++    else {
++      thunk.reset(new Wow64ResolverThunk(child_->Process(), true));
++	  if(!::ReadProcessMemory(child_->Process(), ntdll_base, &base_code,
++			sizeof(base_code), &bytes_read)) {
++				if(::GetLastError() == ERROR_PARTIAL_COPY) {
++					//::ResumeThread(child_->MainThread());
++					while(!::ReadProcessMemory(child_->Process(), ntdll_base, &base_code,
++						sizeof(base_code), &bytes_read)) {
++						;
++					}
++					//::SuspendThread(child_->MainThread());
++					}
++			}
++	}
++  } else if (real_os_version >= base::win::Version::WIN8) {
++    thunk.reset(new Win8ResolverThunk(child_->Process(), true));
++  } else {
++    thunk.reset(new ServiceResolverThunk(child_->Process(), true));
++  }
++#endif
+ 
+   patch.originals = {};
+   for (const auto& interception : interceptions_) {
+@@ -406,7 +439,7 @@ InterceptionManager::PatchClientFunctions(DllInterceptionData* thunks,
+       return base::unexpected(SBOX_ERROR_BAD_PARAMS);
+ 
+     NTSTATUS ret =
+-        thunk.Setup(ntdll_base, interception.function.c_str(),
++        thunk->Setup(ntdll_base, interception.function.c_str(),
+                     interception.interceptor_address,
+                     &UNSAFE_TODO(thunks->thunks[patch.dll_data.num_thunks]),
+                     thunk_bytes - patch.dll_data.used_bytes, nullptr);
+diff --git a/sandbox/win/src/process_mitigations.cc b/sandbox/win/src/process_mitigations.cc
+index 38ae75ee7b2b9..12a58a90cd68a 100644
+--- a/sandbox/win/src/process_mitigations.cc
++++ b/sandbox/win/src/process_mitigations.cc
+@@ -58,7 +58,8 @@ const ULONG64* GetSupportedMitigations() {
+         (base::win::GetVersion() >= base::win::Version::WIN10_RS2)
+             ? (sizeof(mitigations[0]) * 2)
+             : sizeof(mitigations[0]);
+-    if (!::GetProcessMitigationPolicy(::GetCurrentProcess(),
++    if (base::win::GetVersion() >= base::win::Version::WIN7 &&
++        !::GetProcessMitigationPolicy(::GetCurrentProcess(),
+                                       ProcessMitigationOptionsMask,
+                                       &mitigations, mits_size)) {
+       NOTREACHED();
+@@ -111,7 +112,8 @@ bool ApplyProcessMitigationsToCurrentProcess(MitigationFlags starting_flags,
+     const DWORD directory_flags =
+         LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS;
+ #endif
+-    if (!::SetDefaultDllDirectories(directory_flags)) {
++    if (base::win::GetVersion() >= base::win::Version::WIN7 && 
++        !::SetDefaultDllDirectories(directory_flags)) {
+       return false;
+     }
+ 
+@@ -158,6 +160,10 @@ bool ApplyProcessMitigationsToCurrentProcess(MitigationFlags starting_flags,
+   }
+ #endif
+ 
++  // This is all we can do in Win7 and below.
++  if (version < base::win::Version::WIN8)
++    return true;
++
+   // Enable ASLR policies.
+   if (flags & MITIGATION_RELOCATE_IMAGE) {
+     PROCESS_MITIGATION_ASLR_POLICY policy = {};
+diff --git a/sandbox/win/src/restricted_token.cc b/sandbox/win/src/restricted_token.cc
+index 15c8dc1b7c9a0..d5eceef52b33d 100644
+--- a/sandbox/win/src/restricted_token.cc
++++ b/sandbox/win/src/restricted_token.cc
+@@ -16,6 +16,7 @@
+ #include "base/logging.h"
+ #include "base/win/access_token.h"
+ #include "base/win/security_util.h"
++#include "base/win/windows_version.h"
+ #include "sandbox/win/src/acl.h"
+ 
+ namespace sandbox {
+@@ -188,7 +189,7 @@ std::optional<base::win::AccessToken> RestrictedToken::CreateRestricted(
+     return std::nullopt;
+   }
+ 
+-  if (lockdown_default_dacl_) {
++  if (lockdown_default_dacl_ && base::win::GetVersion() >= base::win::Version::VISTA) {
+     // Don't add Restricted sid and also remove logon sid access.
+     std::optional<base::win::Sid> logon_sid = new_token->LogonId();
+     if (logon_sid.has_value()) {
+@@ -249,7 +250,7 @@ std::optional<base::win::AccessToken> RestrictedToken::CreateRestricted(
+     return std::nullopt;
+   }
+ 
+-  if (integrity_rid_.has_value()) {
++  if (integrity_rid_.has_value() && base::win::GetVersion() >= base::win::Version::VISTA) {
+     if (!new_token->SetIntegrityLevel(*integrity_rid_)) {
+       return std::nullopt;
+     }
+diff --git a/sandbox/win/src/service_resolver.h b/sandbox/win/src/service_resolver.h
+index cdfc19035bcb1..85ef35a37d9d7 100644
+--- a/sandbox/win/src/service_resolver.h
++++ b/sandbox/win/src/service_resolver.h
+@@ -46,23 +46,23 @@ class [[clang::lto_visibility_public]] ServiceResolverThunk
+   size_t GetThunkSize() const override;
+ 
+   // Call this to set up ntdll_base_ which will allow for local patches.
+-  void AllowLocalPatches();
++  virtual void AllowLocalPatches();
+ 
+   // Verifies that the function specified by |target_name| in |target_module| is
+   // a service and copies the data from that function into |thunk_storage|. If
+   // |storage_bytes| is too small, then the method fails.
+-  NTSTATUS CopyThunk(const void* target_module,
+-                     const char* target_name,
+-                     BYTE* thunk_storage,
+-                     size_t storage_bytes,
+-                     size_t* storage_used);
++  virtual NTSTATUS CopyThunk(const void* target_module,
++                             const char* target_name,
++                             BYTE* thunk_storage,
++                             size_t storage_bytes,
++                             size_t* storage_used);
+ 
+   // Checks if a target was patched correctly for a jump. This is only for use
+   // in testing in 32-bit builds. Will always return true on 64-bit builds. Set
+   // |thunk_storage| to the same pointer passed to Setup().
+   bool VerifyJumpTargetForTesting(void* thunk_storage) const;
+ 
+- private:
++ protected:
+   // The unit test will use this member to allow local patch on a buffer.
+   HMODULE ntdll_base_;
+ 
+@@ -80,7 +80,7 @@ class [[clang::lto_visibility_public]] ServiceResolverThunk
+   // Returns true if the code pointer by target_ corresponds to the expected
+   // type of function. Saves that code on the first part of the thunk pointed
+   // by local_thunk (should be directly accessible from the parent).
+-  bool IsFunctionAService(void* local_thunk) const;
++  virtual bool IsFunctionAService(void* local_thunk) const;
+ 
+   // Performs the actual patch of target_.
+   // local_thunk must be already fully initialized, and the first part must
+@@ -88,7 +88,7 @@ class [[clang::lto_visibility_public]] ServiceResolverThunk
+   // (yes, private). remote_thunk (real type ServiceFullThunk), must be
+   // allocated on the child, and will contain the thunk data, after this call.
+   // Returns the appropriate status code.
+-  NTSTATUS PerformPatch(void* local_thunk, void* remote_thunk);
++  virtual NTSTATUS PerformPatch(void* local_thunk, void* remote_thunk);
+ 
+   // Provides basically the same functionality as IsFunctionAService but it
+   // continues even if it does not recognize the function code. remote_thunk
+@@ -100,6 +100,74 @@ class [[clang::lto_visibility_public]] ServiceResolverThunk
+   ULONG relative_jump_;
+ };
+ 
++// This is the concrete resolver used to perform service-call type functions
++// inside ntdll.dll on WOW64 (32 bit ntdll on 64 bit Vista).
++class Wow64ResolverThunk : public ServiceResolverThunk {
++ public:
++  // The service resolver needs a child process to write to.
++  Wow64ResolverThunk(HANDLE process, bool relaxed)
++      : ServiceResolverThunk(process, relaxed) {}
++
++  Wow64ResolverThunk(const Wow64ResolverThunk&) = delete;
++  Wow64ResolverThunk& operator=(const Wow64ResolverThunk&) = delete;
++
++  ~Wow64ResolverThunk() override {}
++
++ private:
++  bool IsFunctionAService(void* local_thunk) const override;
++};
++
++// This is the concrete resolver used to perform service-call type functions
++// inside ntdll.dll on WOW64 for Windows 8.
++class Wow64W8ResolverThunk : public ServiceResolverThunk {
++ public:
++  // The service resolver needs a child process to write to.
++  Wow64W8ResolverThunk(HANDLE process, bool relaxed)
++      : ServiceResolverThunk(process, relaxed) {}
++
++  Wow64W8ResolverThunk(const Wow64W8ResolverThunk&) = delete;
++  Wow64W8ResolverThunk& operator=(const Wow64W8ResolverThunk&) = delete;
++
++  ~Wow64W8ResolverThunk() override {}
++
++ private:
++  bool IsFunctionAService(void* local_thunk) const override;
++};
++
++// This is the concrete resolver used to perform service-call type functions
++// inside ntdll.dll on Windows 8.
++class Win8ResolverThunk : public ServiceResolverThunk {
++ public:
++  // The service resolver needs a child process to write to.
++  Win8ResolverThunk(HANDLE process, bool relaxed)
++      : ServiceResolverThunk(process, relaxed) {}
++
++  Win8ResolverThunk(const Win8ResolverThunk&) = delete;
++  Win8ResolverThunk& operator=(const Win8ResolverThunk&) = delete;
++
++  ~Win8ResolverThunk() override {}
++
++ private:
++  bool IsFunctionAService(void* local_thunk) const override;
++};
++
++// This is the concrete resolver used to perform service-call type functions
++// inside ntdll.dll on WOW64 for Windows 10.
++class Wow64W10ResolverThunk : public ServiceResolverThunk {
++ public:
++  // The service resolver needs a child process to write to.
++  Wow64W10ResolverThunk(HANDLE process, bool relaxed)
++      : ServiceResolverThunk(process, relaxed) {}
++
++  Wow64W10ResolverThunk(const Wow64W10ResolverThunk&) = delete;
++  Wow64W10ResolverThunk& operator=(const Wow64W10ResolverThunk&) = delete;
++
++  ~Wow64W10ResolverThunk() override {}
++
++ private:
++  bool IsFunctionAService(void* local_thunk) const override;
++};
++
+ }  // namespace sandbox
+ 
+ #endif  // SANDBOX_WIN_SRC_SERVICE_RESOLVER_H_
+diff --git a/sandbox/win/src/service_resolver_32.cc b/sandbox/win/src/service_resolver_32.cc
+index 7f6bf39c6e17b..0c84a6c0af207 100644
+--- a/sandbox/win/src/service_resolver_32.cc
++++ b/sandbox/win/src/service_resolver_32.cc
+@@ -13,22 +13,54 @@
+ #include "base/compiler_specific.h"
+ #include "base/containers/heap_array.h"
+ 
++#ifdef UNSAFE_BUFFERS_BUILD
++// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
++#pragma allow_unsafe_buffers
++#endif
++
+ namespace {
+ #pragma pack(push, 1)
+ 
+ const BYTE kMovEax = 0xB8;
+ const BYTE kMovEdx = 0xBA;
+ const USHORT kMovEdxEsp = 0xD48B;
++const USHORT kCallPtrEdx = 0x12FF;
+ const USHORT kCallEdx = 0xD2FF;
+ const BYTE kCallEip = 0xE8;
+ const BYTE kRet = 0xC2;
+ const BYTE kRet2 = 0xC3;
+ const USHORT kJmpEdx = 0xE2FF;
++const USHORT kXorEcx = 0xC933;
++const ULONG kLeaEdx = 0x0424548D;
++const ULONG kCallFs1 = 0xC015FF64;
++const USHORT kCallFs2 = 0;
++const BYTE kCallFs3 = 0;
++const BYTE kAddEsp1 = 0x83;
++const USHORT kAddEsp2 = 0x4C4;
+ const BYTE kJmp32 = 0xE9;
+ const USHORT kSysenter = 0x340F;
+ 
+-// Service code for 32 bit Windows. Introduced in Windows 8.
+-struct ServiceEntry32 {
++// Service code for 32 bit systems.
++// NOTE: on win2003 "call dword ptr [edx]" is "call edx".
++struct ServiceEntry {
++  // This struct contains roughly the following code:
++  // 00 mov     eax,25h
++  // 05 mov     edx,offset SharedUserData!SystemCallStub (7ffe0300)
++  // 0a call    dword ptr [edx]
++  // 0c ret     2Ch
++  // 0f nop
++  BYTE mov_eax;         // = B8
++  ULONG service_id;
++  BYTE mov_edx;         // = BA
++  ULONG stub;
++  USHORT call_ptr_edx;  // = FF 12
++  BYTE ret;             // = C2
++  USHORT num_params;
++  BYTE nop;
++};
++
++// Service code for 32 bit Windows 8.
++struct ServiceEntryW8 {
+   // This struct contains the following code:
+   // 00 b825000000      mov     eax,25h
+   // 05 e803000000      call    eip+3
+@@ -49,9 +81,56 @@ struct ServiceEntry32 {
+   USHORT nop;
+ };
+ 
+-// Service code for a 32 bit process under Wow64. Introduced in Windows 10.
+-// Also used for the patching process.
+-struct ServiceEntryWow64 {
++// Service code for a 32 bit process running on a 64 bit os.
++struct Wow64Entry {
++  // This struct may contain one of two versions of code:
++  // 1. For XP, Vista and 2K3:
++  // 00 b825000000      mov     eax, 25h
++  // 05 33c9            xor     ecx, ecx
++  // 07 8d542404        lea     edx, [esp + 4]
++  // 0b 64ff15c0000000  call    dword ptr fs:[0C0h]
++  // 12 c22c00          ret     2Ch
++  //
++  // 2. For Windows 7:
++  // 00 b825000000      mov     eax, 25h
++  // 05 33c9            xor     ecx, ecx
++  // 07 8d542404        lea     edx, [esp + 4]
++  // 0b 64ff15c0000000  call    dword ptr fs:[0C0h]
++  // 12 83c404          add     esp, 4
++  // 15 c22c00          ret     2Ch
++  //
++  // So we base the structure on the bigger one:
++  BYTE mov_eax;         // = B8
++  ULONG service_id;
++  USHORT xor_ecx;       // = 33 C9
++  ULONG lea_edx;        // = 8D 54 24 04
++  ULONG call_fs1;       // = 64 FF 15 C0
++  USHORT call_fs2;      // = 00 00
++  BYTE call_fs3;        // = 00
++  BYTE add_esp1;        // = 83             or ret
++  USHORT add_esp2;      // = C4 04          or num_params
++  BYTE ret;             // = C2
++  USHORT num_params;
++};
++
++// Service code for a 32 bit process running on 64 bit Windows 8.
++struct Wow64EntryW8 {
++  // 00 b825000000      mov     eax, 25h
++  // 05 64ff15c0000000  call    dword ptr fs:[0C0h]
++  // 0b c22c00          ret     2Ch
++  // 0f 90              nop
++  BYTE mov_eax;         // = B8
++  ULONG service_id;
++  ULONG call_fs1;       // = 64 FF 15 C0
++  USHORT call_fs2;      // = 00 00
++  BYTE call_fs3;        // = 00
++  BYTE ret;             // = C2
++  USHORT num_params;
++  BYTE nop;
++};
++
++// Service code for a 32 bit process running on 64 bit Windows 10.
++struct Wow64EntryW10 {
+   // 00 b828000000      mov     eax, 28h
+   // 05 bab0d54877      mov     edx, 7748D5B0h
+   // 09 ffd2            call    edx
+@@ -67,22 +146,22 @@ struct ServiceEntryWow64 {
+ };
+ 
+ // Make sure that relaxed patching works as expected.
+-const size_t kMinServiceSize = offsetof(ServiceEntryWow64, ret);
++const size_t kMinServiceSize = offsetof(ServiceEntry, ret);
+ // Maximum size of the entry, was the size of the Windows Vista WoW64 entry.
+ // Keep this fixed for compatibility reasons.
+ const size_t kMaxServiceSize = 24;
+-static_assert(sizeof(ServiceEntry32) >= kMinServiceSize,
++static_assert(sizeof(ServiceEntry) >= kMinServiceSize,
+               "wrong minimum service length");
+-static_assert(sizeof(ServiceEntry32) < kMaxServiceSize,
++static_assert(sizeof(ServiceEntry) < kMaxServiceSize,
+               "wrong maximum service length");
+-static_assert(sizeof(ServiceEntryWow64) >= kMinServiceSize,
++static_assert(sizeof(Wow64Entry) >= kMinServiceSize,
+               "wrong minimum service length");
+-static_assert(sizeof(ServiceEntryWow64) < kMaxServiceSize,
++static_assert(sizeof(Wow64Entry) <= kMaxServiceSize,
+               "wrong maximum service length");
+ 
+ struct ServiceFullThunk {
+   union {
+-    ServiceEntryWow64 original;
++    Wow64Entry original;
+     // Pad the entry to the maximum size.
+     char dummy[kMaxServiceSize];
+   };
+@@ -91,58 +170,6 @@ struct ServiceFullThunk {
+ 
+ #pragma pack(pop)
+ 
+-bool IsWow64Process() {
+-  // We don't need to use IsWow64Process2 as this returns the expected result
+-  // when running in the ARM64 x86 emulator.
+-  BOOL is_wow64 = FALSE;
+-  return ::IsWow64Process(::GetCurrentProcess(), &is_wow64) && is_wow64;
+-}
+-
+-bool IsFunctionAService32(HANDLE process, void* target, void* local_thunk) {
+-  ServiceEntry32 function_code;
+-  SIZE_T read;
+-  if (!::ReadProcessMemory(process, target, &function_code,
+-                           sizeof(function_code), &read)) {
+-    return false;
+-  }
+-
+-  if (sizeof(function_code) != read)
+-    return false;
+-
+-  if (kMovEax != function_code.mov_eax || kCallEip != function_code.call_eip ||
+-      function_code.call_offset != 3 || kRet != function_code.ret_p ||
+-      kMovEdxEsp != function_code.mov_edx_esp ||
+-      kSysenter != function_code.sysenter || kRet2 != function_code.ret) {
+-    return false;
+-  }
+-
+-  // Save the verified code
+-  UNSAFE_TODO(memcpy(local_thunk, &function_code, sizeof(function_code)));
+-
+-  return true;
+-}
+-
+-bool IsFunctionAServiceWow64(HANDLE process, void* target, void* local_thunk) {
+-  ServiceEntryWow64 function_code;
+-  SIZE_T read;
+-  if (!::ReadProcessMemory(process, target, &function_code,
+-                           sizeof(function_code), &read)) {
+-    return false;
+-  }
+-
+-  if (sizeof(function_code) != read)
+-    return false;
+-
+-  if (kMovEax != function_code.mov_eax || kMovEdx != function_code.mov_edx ||
+-      kCallEdx != function_code.call_edx || kRet != function_code.ret) {
+-    return false;
+-  }
+-
+-  // Save the verified code
+-  UNSAFE_TODO(memcpy(local_thunk, &function_code, sizeof(function_code)));
+-  return true;
+-}
+-
+ }  // namespace
+ 
+ namespace sandbox {
+@@ -209,14 +236,69 @@ NTSTATUS ServiceResolverThunk::CopyThunk(const void* target_module,
+ }
+ 
+ bool ServiceResolverThunk::IsFunctionAService(void* local_thunk) const {
+-  static bool is_wow64 = IsWow64Process();
+-  return is_wow64 ? IsFunctionAServiceWow64(process_, target_, local_thunk)
+-                  : IsFunctionAService32(process_, target_, local_thunk);
++  ServiceEntry function_code;
++  SIZE_T read;
++  if (!::ReadProcessMemory(process_, target_, &function_code,
++                           sizeof(function_code), &read)) {
++    return false;
++  }
++
++  if (sizeof(function_code) != read)
++    return false;
++
++  if (kMovEax != function_code.mov_eax || kMovEdx != function_code.mov_edx ||
++      (kCallPtrEdx != function_code.call_ptr_edx &&
++       kCallEdx != function_code.call_ptr_edx) ||
++      kRet != function_code.ret) {
++    return false;
++  }
++
++  // Find the system call pointer if we don't already have it.
++  if (kCallEdx != function_code.call_ptr_edx) {
++    DWORD ki_system_call;
++    if (!::ReadProcessMemory(process_,
++                             reinterpret_cast<const void*>(function_code.stub),
++                             &ki_system_call, sizeof(ki_system_call), &read)) {
++      return false;
++    }
++
++    if (sizeof(ki_system_call) != read)
++      return false;
++
++    HMODULE module_1, module_2;
++    // last check, call_stub should point to a KiXXSystemCall function on ntdll
++    if (!GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
++                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                           reinterpret_cast<const wchar_t*>(ki_system_call),
++                           &module_1)) {
++      return false;
++    }
++
++    if (ntdll_base_) {
++      // This path is only taken when running the unit tests. We want to be
++      // able to patch a buffer in memory, so target_ is not inside ntdll.
++      module_2 = ntdll_base_;
++    } else {
++      if (!GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
++                                 GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                             reinterpret_cast<const wchar_t*>(target_),
++                             &module_2))
++        return false;
++    }
++
++    if (module_1 != module_2)
++      return false;
++  }
++
++  // Save the verified code
++  memcpy(local_thunk, &function_code, sizeof(function_code));
++
++  return true;
+ }
+ 
+ NTSTATUS ServiceResolverThunk::PerformPatch(void* local_thunk,
+                                             void* remote_thunk) {
+-  ServiceEntryWow64 intercepted_code;
++  ServiceEntry intercepted_code;
+   size_t bytes_to_write = sizeof(intercepted_code);
+   ServiceFullThunk* full_local_thunk =
+       reinterpret_cast<ServiceFullThunk*>(local_thunk);
+@@ -229,15 +311,15 @@ NTSTATUS ServiceResolverThunk::PerformPatch(void* local_thunk,
+   intercepted_code.mov_eax = kMovEax;
+   intercepted_code.service_id = full_local_thunk->original.service_id;
+   intercepted_code.mov_edx = kMovEdx;
+-  intercepted_code.mov_edx_param =
+-      reinterpret_cast<ULONG>(&full_remote_thunk->internal_thunk);
+-  intercepted_code.call_edx = kJmpEdx;
++  intercepted_code.stub =
++       reinterpret_cast<ULONG>(&full_remote_thunk->internal_thunk);
++  intercepted_code.call_ptr_edx = kJmpEdx;
+   bytes_to_write = kMinServiceSize;
+ 
+   if (relative_jump_) {
+     intercepted_code.mov_eax = kJmp32;
+     intercepted_code.service_id = relative_jump_;
+-    bytes_to_write = offsetof(ServiceEntryWow64, mov_edx);
++    bytes_to_write = offsetof(ServiceEntry, mov_edx);
+   }
+ 
+   // setup the thunk
+@@ -273,7 +355,7 @@ NTSTATUS ServiceResolverThunk::PerformPatch(void* local_thunk,
+ 
+ bool ServiceResolverThunk::SaveOriginalFunction(void* local_thunk,
+                                                 void* remote_thunk) {
+-  ServiceEntryWow64 function_code;
++  ServiceEntry function_code;
+   SIZE_T read;
+   if (!::ReadProcessMemory(process_, target_, &function_code,
+                            sizeof(function_code), &read)) {
+@@ -309,18 +391,98 @@ bool ServiceResolverThunk::SaveOriginalFunction(void* local_thunk,
+   return true;
+ }
+ 
+-bool ServiceResolverThunk::VerifyJumpTargetForTesting(
+-    void* thunk_storage) const {
+-  const size_t kJmp32Size = 5;
+-  ServiceEntryWow64* patched = static_cast<ServiceEntryWow64*>(target_);
+-  if (kJmp32 != patched->mov_eax) {
++bool Wow64ResolverThunk::IsFunctionAService(void* local_thunk) const {
++  Wow64Entry function_code;
++  SIZE_T read;
++  if (!::ReadProcessMemory(process_, target_, &function_code,
++                           sizeof(function_code), &read)) {
++    return false;
++  }
++
++  if (sizeof(function_code) != read)
++     return false;
++
++  if (kMovEax != function_code.mov_eax || kXorEcx != function_code.xor_ecx ||
++      kLeaEdx != function_code.lea_edx || kCallFs1 != function_code.call_fs1 ||
++      kCallFs2 != function_code.call_fs2 ||
++      kCallFs3 != function_code.call_fs3) {
++    return false;
++  }
++
++  if ((kAddEsp1 == function_code.add_esp1 &&
++       kAddEsp2 == function_code.add_esp2 && kRet == function_code.ret) ||
++      kRet == function_code.add_esp1) {
++    // Save the verified code
++    memcpy(local_thunk, &function_code, sizeof(function_code));
++    return true;
++   }
++  return false;
++}
++bool Wow64W8ResolverThunk::IsFunctionAService(void* local_thunk) const {
++  Wow64EntryW8 function_code;
++  SIZE_T read;
++  if (!::ReadProcessMemory(process_, target_, &function_code,
++                           sizeof(function_code), &read)) {
++    return false;
++  }
++
++if (sizeof(function_code) != read)
++    return false;
++
++  if (kMovEax != function_code.mov_eax || kCallFs1 != function_code.call_fs1 ||
++      kCallFs2 != function_code.call_fs2 ||
++      kCallFs3 != function_code.call_fs3 || kRet != function_code.ret) {
++    return false;
++  }
++
++  // Save the verified code
++  memcpy(local_thunk, &function_code, sizeof(function_code));
++  return true;
++}
++
++bool Win8ResolverThunk::IsFunctionAService(void* local_thunk) const {
++  ServiceEntryW8 function_code;
++  SIZE_T read;
++  if (!::ReadProcessMemory(process_, target_, &function_code,
++                           sizeof(function_code), &read)) {
++    return false;
++  }
++
++  if (sizeof(function_code) != read)
++    return false;
++
++  if (kMovEax != function_code.mov_eax || kCallEip != function_code.call_eip ||
++      function_code.call_offset != 3 || kRet != function_code.ret_p ||
++      kMovEdxEsp != function_code.mov_edx_esp ||
++      kSysenter != function_code.sysenter || kRet2 != function_code.ret) {
+     return false;
+   }
+ 
+-  ULONG source_addr = reinterpret_cast<ULONG>(target_);
+-  ULONG target_addr = reinterpret_cast<ULONG>(thunk_storage);
+-  return target_addr + kMaxServiceSize - kJmp32Size - source_addr ==
+-         patched->service_id;
++  // Save the verified code
++  memcpy(local_thunk, &function_code, sizeof(function_code));
++
++  return true;
+ }
+ 
++bool Wow64W10ResolverThunk::IsFunctionAService(void* local_thunk) const {
++  Wow64EntryW10 function_code;
++  SIZE_T read;
++  if (!::ReadProcessMemory(process_, target_, &function_code,
++                           sizeof(function_code), &read)) {
++    return false;
++  }
++
++  if (sizeof(function_code) != read)
++    return false;
++
++  if (kMovEax != function_code.mov_eax || kMovEdx != function_code.mov_edx ||
++      kCallEdx != function_code.call_edx || kRet != function_code.ret) {
++    return false;
++  }
++
++  // Save the verified code
++  memcpy(local_thunk, &function_code, sizeof(function_code));
++  return true;
++ }
++
+ }  // namespace sandbox
+diff --git a/sandbox/win/src/win_utils.cc b/sandbox/win/src/win_utils.cc
+index fc425d23651e5..6c2f4c6ecc454 100644
+--- a/sandbox/win/src/win_utils.cc
++++ b/sandbox/win/src/win_utils.cc
+@@ -151,6 +151,36 @@ DWORD GetLastErrorFromNtStatus(NTSTATUS status) {
+   return GetNtExports()->RtlNtStatusToDosError(status);
+ }
+ 
++std::optional<ProcessHandleMap> GetCurrentProcessHandlesWin7() {
++  DWORD handle_count = UINT_MAX;
++  const int kInvalidHandleThreshold = 100;
++  const size_t kHandleOffset = 4;  // Handles are always a multiple of 4.
++
++  if (!::GetProcessHandleCount(::GetCurrentProcess(), &handle_count))
++    return std::nullopt;
++  ProcessHandleMap handle_map;
++
++  uint32_t handle_value = 0;
++  int invalid_count = 0;
++
++  // Keep incrementing until we hit the number of handles reported by
++  // GetProcessHandleCount(). If we hit a very long sequence of invalid
++  // handles we assume that we've run past the end of the table.
++  while (handle_count && invalid_count < kInvalidHandleThreshold) {
++    handle_value += kHandleOffset;
++    HANDLE handle = base::win::Uint32ToHandle(handle_value);
++    auto type_name = GetTypeNameFromHandle(handle);
++    if (!type_name) {
++      ++invalid_count;
++      continue;
++    }
++
++    --handle_count;
++    handle_map[type_name.value()].push_back(handle);
++  }
++  return handle_map;
++}
++
+ bool ContainsNulCharacter(std::wstring_view str) {
+   wchar_t nul = '\0';
+   return str.find_first_of(nul) != std::wstring::npos;
+diff --git a/sandbox/win/src/win_utils.h b/sandbox/win/src/win_utils.h
+index 6c6faeef88a57..92939ac5e6096 100644
+--- a/sandbox/win/src/win_utils.h
++++ b/sandbox/win/src/win_utils.h
+@@ -8,10 +8,12 @@
+ #include <stdint.h>
+ #include <stdlib.h>
+ 
++#include <map>
+ #include <memory>
+ #include <optional>
+ #include <string>
+ #include <string_view>
++#include <vector>
+ 
+ #include "base/containers/span.h"
+ #include "base/win/windows_types.h"
+@@ -21,6 +23,9 @@ namespace sandbox {
+ // Prefix for path used by NT calls.
+ const wchar_t kNTPrefix[] = L"\\??\\";
+ 
++// List of handles mapped to their kernel object type name.
++using ProcessHandleMap = std::map<std::wstring, std::vector<HANDLE>>;
++
+ // Basic implementation of a singleton which calls the destructor
+ // when the exe is shutting down or the DLL is being unloaded.
+ template <typename Derived>
+@@ -68,6 +73,11 @@ bool IsPipe(const std::wstring& path);
+ // Converts a NTSTATUS code to a Win32 error code.
+ DWORD GetLastErrorFromNtStatus(NTSTATUS status);
+ 
++// Fallback function for GetCurrentProcessHandles. Should only be needed on
++// Windows 7 which doesn't support the API to query all process handles. This
++// uses a brute force method to get the process handles.
++std::optional<ProcessHandleMap> GetCurrentProcessHandlesWin7();
++
+ // Returns true if the string contains a NUL ('\0') character.
+ bool ContainsNulCharacter(std::wstring_view str);
+ 
+diff --git a/services/network/restricted_cookie_manager.cc b/services/network/restricted_cookie_manager.cc
+index b8103018a7617..da0dffd43c7b6 100644
+--- a/services/network/restricted_cookie_manager.cc
++++ b/services/network/restricted_cookie_manager.cc
+@@ -849,10 +849,10 @@ void RestrictedCookieManager::SetCanonicalCookie(
+           cookie.PartitionKey(), source_scheme, origin_.port(),
+           cookie.SourceType(),
+           net::CanonicalCookieFromStorageCallSite::kRestrictedCookieManager);
+-  DCHECK(sanitized_cookie);
++  // DCHECK(sanitized_cookie);
+   // FromStorage() uses a less strict version of IsCanonical(), we need to check
+   // the stricter version as well here.
+-  if (!sanitized_cookie->IsCanonical()) {
++  if (!sanitized_cookie || !sanitized_cookie->IsCanonical()) {
+     std::move(callback).Run(false);
+     return;
+   }
+diff --git a/third_party/blink/common/client_hints/enabled_client_hints.cc b/third_party/blink/common/client_hints/enabled_client_hints.cc
+index 2f000524c5207..cf44f80bf5e24 100644
+--- a/third_party/blink/common/client_hints/enabled_client_hints.cc
++++ b/third_party/blink/common/client_hints/enabled_client_hints.cc
+@@ -26,7 +26,13 @@ bool IsDisabledByFeature(const WebClientHintsType type) {
+     case WebClientHintsType::kUAFullVersionList:
+     case WebClientHintsType::kUABitness:
+     case WebClientHintsType::kUAWoW64:
++      if (base::FeatureList::IsEnabled(features::kRemoveClientHints))
++        return true;
++      break;
+     case WebClientHintsType::kUAFormFactors:
++      if (base::FeatureList::IsEnabled(features::kRemoveClientHints))
++         return true;
++      break;
+     case WebClientHintsType::kPrefersColorScheme:
+     case WebClientHintsType::kViewportHeight:
+     case WebClientHintsType::kDeviceMemory:
+diff --git a/third_party/blink/common/features.cc b/third_party/blink/common/features.cc
+index 1c03e395d86fa..fc2d78d5cc9f0 100644
+--- a/third_party/blink/common/features.cc
++++ b/third_party/blink/common/features.cc
+@@ -2785,6 +2785,9 @@ BASE_FEATURE(kWorkerThreadRespectTermRequest, base::FEATURE_ENABLED_BY_DEFAULT);
+ // Enables certain features which are not needed on other platforms.
+ BASE_FEATURE(kXrDevice, base::FEATURE_DISABLED_BY_DEFAULT);
+ 
++// Disable user agent client hints at the renderer level.
++BASE_FEATURE(kRemoveClientHints, base::FEATURE_DISABLED_BY_DEFAULT);
++
+ // Enable the 'unframed' display override for IWAs. go/unframed-explainer-doc.
+ BASE_FEATURE(kUnframedIwa, base::FEATURE_DISABLED_BY_DEFAULT);
+ 
+diff --git a/third_party/blink/public/common/features.h b/third_party/blink/public/common/features.h
+index 1818562aeec42..b463f2cb7fd57 100644
+--- a/third_party/blink/public/common/features.h
++++ b/third_party/blink/public/common/features.h
+@@ -48,6 +48,9 @@ BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kAdAuctionSignals);
+ BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE_PARAM(int,
+                                                kAdAuctionSignalsMaxSizeBytes);
+ 
++// Disable User Agent Client Hints.
++BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kRemoveClientHints);
++
+ BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kAudioWorkletJSDenormalEnabler);
+ 
+ // Avoids copying ResourceRequest::TrustedParams when possible.
+diff --git a/third_party/blink/renderer/core/frame/navigator_ua.cc b/third_party/blink/renderer/core/frame/navigator_ua.cc
+index 22483bb57adf7..5d2158e137d42 100644
+--- a/third_party/blink/renderer/core/frame/navigator_ua.cc
++++ b/third_party/blink/renderer/core/frame/navigator_ua.cc
+@@ -5,6 +5,7 @@
+ #include "third_party/blink/renderer/core/frame/navigator_ua.h"
+ 
+ #include "base/compiler_specific.h"
++#include "third_party/blink/public/common/features.h"
+ #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
+ #include "third_party/blink/renderer/core/frame/navigator_ua_data.h"
+ #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+@@ -12,6 +13,8 @@
+ namespace blink {
+ 
+ NavigatorUAData* NavigatorUA::userAgentData() {
++ if (base::FeatureList::IsEnabled(blink::features::kRemoveClientHints))
++    return nullptr;
+   NavigatorUAData* ua_data =
+       MakeGarbageCollected<NavigatorUAData>(GetUAExecutionContext());
+ 
+diff --git a/third_party/blink/renderer/platform/loader/fetch/client_hints_preferences.cc b/third_party/blink/renderer/platform/loader/fetch/client_hints_preferences.cc
+index 8a0cc9e0f340e..5a2e279b1f3be 100644
+--- a/third_party/blink/renderer/platform/loader/fetch/client_hints_preferences.cc
++++ b/third_party/blink/renderer/platform/loader/fetch/client_hints_preferences.cc
+@@ -5,10 +5,12 @@
+ #include "third_party/blink/renderer/platform/loader/fetch/client_hints_preferences.h"
+ 
+ #include "base/command_line.h"
++#include "base/feature_list.h"
+ #include "services/metrics/public/cpp/ukm_builders.h"
+ #include "services/network/public/cpp/client_hints.h"
+ #include "services/network/public/cpp/is_potentially_trustworthy.h"
+ #include "third_party/blink/public/common/client_hints/client_hints.h"
++#include "third_party/blink/public/common/features.h"
+ #include "third_party/blink/public/common/switches.h"
+ #include "third_party/blink/renderer/platform/network/http_names.h"
+ #include "third_party/blink/renderer/platform/network/http_parsers.h"
+@@ -122,9 +124,10 @@ bool ClientHintsPreferences::IsClientHintsAllowed(const KURL& url) {
+   // TODO(crbug.com/862940): This should probably be using
+   // network::IsUrlPotentiallyTrustworthy() instead of coercing the URL to an
+   // origin first.
+-  return (url.ProtocolIs("http") || url.ProtocolIs("https")) &&
++  return !base::FeatureList::IsEnabled(features::kRemoveClientHints) &&
++        ((url.ProtocolIs("http") || url.ProtocolIs("https")) &&
+          network::IsOriginPotentiallyTrustworthy(
+-             url::Origin::Create(GURL(url)));
++             url::Origin::Create(GURL(url))));
+ }
+ 
+ EnabledClientHints ClientHintsPreferences::GetEnabledClientHints() const {
+diff --git a/third_party/blink/renderer/platform/runtime_enabled_features.json5 b/third_party/blink/renderer/platform/runtime_enabled_features.json5
+index b4ecce05e616d..28a6c7fb1265f 100644
+--- a/third_party/blink/renderer/platform/runtime_enabled_features.json5
++++ b/third_party/blink/renderer/platform/runtime_enabled_features.json5
+@@ -1974,6 +1974,10 @@
+       name: "CSSSupportsForImportRules",
+       status: "stable",
+     },
++    {
++      name: "UserAgentClientHint",
++      status: "stable",
++    },
+     {
+       // https://chromestatus.com/feature/5153932394102784
+       // Shipping in M150, so flag can be removed around M152.

@@ -1,0 +1,1942 @@
+diff --git a/chrome/browser/ui/browser_command_controller.cc b/chrome/browser/ui/browser_command_controller.cc
+index f5831f33b9fd1..a745551e9548b 100644
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -1880,7 +1880,8 @@ void BrowserCommandController::InitCommandState() {
+   command_updater_.UpdateCommandEnabled(IDC_WINDOW_CLOSE_OTHER_TABS,
+                                         normal_window);
+ 
+-  const bool enable_tab_search_commands = browser_->is_type_normal();
++  const bool enable_tab_search_commands = browser_->is_type_normal() &&
++      !base::CommandLine::ForCurrentProcess()->HasSwitch("remove-tabsearch-button");
+   command_updater_.UpdateCommandEnabled(IDC_TAB_SEARCH,
+                                         enable_tab_search_commands);
+   command_updater_.UpdateCommandEnabled(IDC_TAB_SEARCH_CLOSE,
+diff --git a/chrome/browser/ui/layout_constants.cc b/chrome/browser/ui/layout_constants.cc
+index b2c1709b4c2ac..9f6702af095c6 100644
+--- a/chrome/browser/ui/layout_constants.cc
++++ b/chrome/browser/ui/layout_constants.cc
+@@ -4,9 +4,14 @@
+ 
+ #include "chrome/browser/ui/layout_constants.h"
+ 
++#include "base/command_line.h"
++#include "base/files/file_util.h"
++#include "base/logging.h"
+ #include "base/notreached.h"
++#include "base/path_service.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/ui/tabs/features.h"
++#include "chrome/common/chrome_paths.h"
+ #include "components/omnibox/common/omnibox_features.h"
+ #include "ui/base/pointer/touch_ui_controller.h"
+ #include "ui/base/ui_base_features.h"
+@@ -16,160 +21,175 @@
+ #include "chromeos/constants/chromeos_features.h"
+ #endif
+ 
+-int GetLayoutConstant(LayoutConstant constant) {
++#ifdef UNSAFE_BUFFERS_BUILD
++// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
++#pragma allow_unsafe_buffers
++#endif
++
++int layout_constant_values[(size_t)LayoutConstant::kLast];
++
++void SetTabStripFullscreen() {
++  if (!layout_constant_values[(int)LayoutConstant::kTabStripPadWhenMaximized])
++     layout_constant_values[(int)LayoutConstant::kTabStripPadding] = 0;
++}
++
++void SetTabStripWindowed() {
++  layout_constant_values[(int)LayoutConstant::kTabStripPadding] = layout_constant_values[(int)LayoutConstant::kTabStripMaximizedAntiPadding];
++}
++
++void SetLayoutConstantsFallback() {
+   const bool touch_ui = ui::TouchUiController::Get()->touch_ui();
+-  switch (constant) {
+-    case LayoutConstant::kAppMenuProfileRowAvatarIconSize:
+-      return 24;
+-    case LayoutConstant::kAppMenuMaximumCharacterLength:
+-      return 30;
+-    case LayoutConstant::kBookmarkBarHeight: {
+-      // The fixed margin ensures the bookmark buttons appear centered relative
+-      // to the white space above and below.
+-      const int bookmark_bar_attached_vertical_margin = 6;
+-      return GetLayoutConstant(LayoutConstant::kBookmarkBarButtonHeight) +
+-             bookmark_bar_attached_vertical_margin;
+-    }
+-    case LayoutConstant::kBookmarkBarButtonHeight:
+-      return touch_ui ? 36 : 28;
+-    case LayoutConstant::kBookmarkBarButtonPadding:
+-      return GetLayoutConstant(LayoutConstant::kToolbarElementPadding);
+-    case LayoutConstant::kBookmarkBarButtonImageLabelPadding:
+-      return 6;
+-    case LayoutConstant::kWebAppMenuButtonSize:
+-      return 24;
+-    case LayoutConstant::kWebAppPageActionIconSize:
++  layout_constant_values[(int)LayoutConstant::kAppMenuProfileRowAvatarIconSize] = 24;
++    layout_constant_values[(int)LayoutConstant::kAppMenuMaximumCharacterLength] = 30;    
++	layout_constant_values[(int)LayoutConstant::kBookmarkBarButtonHeight] = touch_ui ? 36 : 28;
++    // The fixed margin ensures the bookmark buttons appear centered relative
++    // to the white space above and below.
++    layout_constant_values[(int)LayoutConstant::kBookmarkBarHeight] = layout_constant_values[(int)LayoutConstant::kBookmarkBarButtonHeight] 
++                                                                 + 6;
++    layout_constant_values[(int)LayoutConstant::kBookmarkBarButtonPadding] = touch_ui ? 0 : 4;
++    layout_constant_values[(int)LayoutConstant::kBookmarkBarButtonImageLabelPadding] = 6;
++    layout_constant_values[(int)LayoutConstant::kWebAppMenuButtonSize] = 24;
+       // We must limit the size of icons in the title bar to avoid vertically
+-      // stretching the container view.
+-      return 16;
+-    case LayoutConstant::kLocationBarBubbleFontVerticalPadding:
+-      return 2;
+-    case LayoutConstant::kLocationBarBubbleAnchorVerticalInset:
+-      return 1;
+-    case LayoutConstant::kLocationBarChildInteriorPadding:
+-      return 3;
+-    case LayoutConstant::kLocationBarChildInternalSpacing:
+-      return touch_ui ? 10 : 4;
+-    case LayoutConstant::kLocationBarChildCornerRadius:
+-      return 12;
+-    case LayoutConstant::kLocationBarChipIconSize:
+-      return 16;
+-    case LayoutConstant::kLocationBarChipPadding:
+-      return 4;
+-    case LayoutConstant::kLocationBarElementPadding:
+-      return touch_ui ? 3 : 2;
+-    case LayoutConstant::kLocationBarPageInfoIconVerticalPadding:
+-      return touch_ui ? 3 : 5;
+-    case LayoutConstant::kLocationBarPageInfoIconLabelExtraTrailingPadding:
+-      return 4;
+-    case LayoutConstant::kLocationBarPageInfoIconDangerousLeadingPadding:
+-      return 6;
+-    case LayoutConstant::kLocationBarPageInfoIconDangerousTrailingPadding:
+-      return 10;
+-    case LayoutConstant::kLocationBarTrailingDecorationEdgePadding:
+-      return touch_ui ? 3 : 12;
+-    case LayoutConstant::kLocationBarTrailingDecorationInnerPadding:
+-      return touch_ui ? 3 : 8;
+-    case LayoutConstant::kLocationBarHeight:
+-      return touch_ui ? 36 : 34;
++      // stretching the container view. 
++    layout_constant_values[(int)LayoutConstant::kWebAppPageActionIconSize] = 16;
++    layout_constant_values[(int)LayoutConstant::kLocationBarBubbleFontVerticalPadding] = 2;
++    layout_constant_values[(int)LayoutConstant::kLocationBarBubbleAnchorVerticalInset] = 1;
++    layout_constant_values[(int)LayoutConstant::kLocationBarChildInteriorPadding] = 3;
++    layout_constant_values[(int)LayoutConstant::kLocationBarChildInternalSpacing] = touch_ui ? 10 : 4;
++    layout_constant_values[(int)LayoutConstant::kLocationBarChildCornerRadius] = 12;
++    layout_constant_values[(int)LayoutConstant::kLocationBarChipIconSize] = 16;
++    layout_constant_values[(int)LayoutConstant::kLocationBarChipPadding] = 4;
++    layout_constant_values[(int)LayoutConstant::kLocationBarElementPadding] = touch_ui ? 3 : 2;
++    layout_constant_values[(int)LayoutConstant::kLocationBarPageInfoIconVerticalPadding] = touch_ui ? 3 : 5;
++    layout_constant_values[(int)LayoutConstant::kLocationBarPageInfoIconLabelExtraTrailingPadding] = 4;
++    layout_constant_values[(int)LayoutConstant::kLocationBarPageInfoIconDangerousLeadingPadding] = 6;
++    layout_constant_values[(int)LayoutConstant::kLocationBarPageInfoIconDangerousTrailingPadding] = 10;
++    layout_constant_values[(int)LayoutConstant::kLocationBarTrailingDecorationEdgePadding] = touch_ui ? 3 : 12;
++    layout_constant_values[(int)LayoutConstant::kLocationBarTrailingDecorationInnerPadding] = touch_ui ? 3 : 8;
++    layout_constant_values[(int)LayoutConstant::kLocationBarHeight] = touch_ui ? 36 : 34;
+     // LINT.IfChange(LocationBarIconSize)
+-    case LayoutConstant::kLocationBarIconSize:
+-      return touch_ui ? 20 : 16;
++    layout_constant_values[(int)LayoutConstant::kLocationBarIconSize] = touch_ui ? 20 : 16;
+     // LINT.ThenChange(//chrome/browser/ui/omnibox/omnibox_edit_model.cc:SuperGIconSize)
+-    case LayoutConstant::kLocationBarLeadingIconSize:
+-      return GetLayoutConstant(LayoutConstant::kLocationBarIconSize);
+-    case LayoutConstant::kLocationBarTrailingIconSize:
+-      return 20;
+-    case LayoutConstant::kNewTabButtonLeadingMargin:
+-      return 0;
+-    case LayoutConstant::kStarRatingIconSize:
+-      return 14;
+-    case LayoutConstant::kTabAfterTitlePadding:
+-      return touch_ui ? 8 : 4;
+-    case LayoutConstant::kTabAlertIndicatorCaptureIconWidth:
+-      return 16;
+-    case LayoutConstant::kTabAlertIndicatorIconWidth:
+-      return touch_ui ? 12 : 16;
+-    case LayoutConstant::kTabCloseButtonSize:
+-      return touch_ui ? 24 : (features::IsRoundedIconsEnabled() ? 14 : 16);
+-    case LayoutConstant::kTabHeight:
+-      return 34 + GetLayoutConstant(LayoutConstant::kTabstripToolbarOverlap);
+-    case LayoutConstant::kTabStripHeight:
+-      return GetLayoutConstant(LayoutConstant::kTabHeight) +
+-             GetLayoutConstant(LayoutConstant::kTabStripPadding);
+-    case LayoutConstant::kTabStripPadding:
+-      return 6;
+-    case LayoutConstant::kTabSeparatorHeight:
+-      return touch_ui ? 24 : 20;
+-    case LayoutConstant::kTabPreTitlePadding:
+-      return 8;
+-    case LayoutConstant::kTabStackDistance:
+-      return touch_ui ? 4 : 6;
+-    case LayoutConstant::kTabstripToolbarOverlap:
+-      return 1;
+-    case LayoutConstant::kToolbarButtonHeight:
+-      return touch_ui ? 48 : 34;
+-    case LayoutConstant::kToolbarButtonIconSize:
+-      return touch_ui ? kDefaultTouchableIconSize
+-                      : kDefaultIconSizeChromeRefresh;
+-    case LayoutConstant::kToolbarDividerCornerRadius:
+-      return 1;
+-    case LayoutConstant::kToolbarDividerHeight:
+-      return touch_ui ? 20 : 16;
+-    case LayoutConstant::kToolbarDividerSpacing:
+-      return 9;
+-    case LayoutConstant::kToolbarDividerWidth:
+-      return 2;
+-    case LayoutConstant::kToolbarElementPadding:
+-      return touch_ui ? 0 : 4;
+-    case LayoutConstant::kToolbarIconDefaultMargin:
+-      return touch_ui ? 0 : 2;
+-    case LayoutConstant::kLocationBarMargin:
+-      return touch_ui ? 12 : 9;
+-    case LayoutConstant::kSidePanelInset:
+-      return 8;
+-    case LayoutConstant::kPageInfoIconSize:
+-      return 20;
+-    case LayoutConstant::kDownloadIconSize:
+-      return 20;
+-    case LayoutConstant::kMainBackgroundRegionCornerRadius:
+-    case LayoutConstant::kToolbarCornerRadius:
+-    case LayoutConstant::kVerticalTabCornerRadius:
+-      return 8;
+-    case LayoutConstant::kVerticalTabHeight:
+-      return 30;
+-    case LayoutConstant::kVerticalTabPinnedHeight:
+-      return 32;
+-    case LayoutConstant::kVerticalTabMinWidth:
+-      return 32;
+-    case LayoutConstant::kVerticalTabStripHorizontalPadding:
+-      return 12;
+-    case LayoutConstant::kVerticalTabStripUncollapsedVerticalPadding:
+-      return 12;
+-    case LayoutConstant::kVerticalTabStripCollapsedVerticalPadding:
+-      return 8;
+-    case LayoutConstant::kVerticalTabStripComboButtonIconSize:
+-      return 18;
+-    case LayoutConstant::kVerticalTabStripButtonIconSize:
+-      return 20;
+-    case LayoutConstant::kVerticalTabStripTopButtonPadding:
+-      return 4;
+-    case LayoutConstant::kVerticalTabStripFlatEdgeButtonPadding:
+-      return 2;
+-    case LayoutConstant::kVerticalTabStripTopButtonContainerHeight:
+-      return 28;
+-    case LayoutConstant::kVerticalTabStripNewTabButtonSize:
+-      return 32;
+-    case LayoutConstant::kVerticalTabStripCollapseButtonSize:
+-      return 32;
+-    case LayoutConstant::kVerticalTabStripTopContainerButtonSize:
+-      return 28;
+-    case LayoutConstant::kVerticalTabPinnedBorderThickness:
+-      return 1;
+-    default:
+-      break;
+-  }
+-  NOTREACHED();
++    layout_constant_values[(int)LayoutConstant::kLocationBarLeadingIconSize] = GetLayoutConstant(LayoutConstant::kLocationBarIconSize);
++    layout_constant_values[(int)LayoutConstant::kLocationBarTrailingIconSize] = 20;
++    layout_constant_values[(int)LayoutConstant::kNewTabButtonLeadingMargin] = 0;
++    layout_constant_values[(int)LayoutConstant::kStarRatingIconSize] = 14;
++    layout_constant_values[(int)LayoutConstant::kTabAfterTitlePadding] = touch_ui ? 8 : 4;
++    layout_constant_values[(int)LayoutConstant::kTabAlertIndicatorCaptureIconWidth] = 16;
++    layout_constant_values[(int)LayoutConstant::kTabAlertIndicatorIconWidth] = touch_ui ? 12 : 16;
++    layout_constant_values[(int)LayoutConstant::kTabCloseButtonSize] = touch_ui ? 24 : 
++                                                                 (features::IsRoundedIconsEnabled() ? 14 : 16);
++    if (base::CommandLine::ForCurrentProcess()->HasSwitch("compact-tab-ui")) {
++       layout_constant_values[(int)LayoutConstant::kTabHeight] = 28;
++	   layout_constant_values[(int)LayoutConstant::kTabStripPadding] = 6; 
++    } else if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "") {
++       layout_constant_values[(int)LayoutConstant::kTabHeight] = 30;
++	   layout_constant_values[(int)LayoutConstant::kTabStripPadding] = 6; 
++    } else {
++       layout_constant_values[(int)LayoutConstant::kTabHeight] = 35;
++	   layout_constant_values[(int)LayoutConstant::kTabStripPadding] = 6; 
++    }
++    layout_constant_values[(int)LayoutConstant::kTabStripHeight] = layout_constant_values[(int)LayoutConstant::kTabHeight] +
++                                                              layout_constant_values[(int)LayoutConstant::kTabStripPadding];
++    if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "v60" ||
++        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "rectangular") {
++        layout_constant_values[(int)LayoutConstant::kTabSeparatorHeight] = 0;
++    } else {
++        layout_constant_values[(int)LayoutConstant::kTabSeparatorHeight] = touch_ui ? 24 : 20;
++        if (base::CommandLine::ForCurrentProcess()->HasSwitch("compact-tab-ui"))
++            layout_constant_values[(int)LayoutConstant::kTabSeparatorHeight] -= 6;
++    }
++    layout_constant_values[(int)LayoutConstant::kTabPreTitlePadding] = 8;
++    layout_constant_values[(int)LayoutConstant::kTabStackDistance] = touch_ui ? 4 : 6;
++    layout_constant_values[(int)LayoutConstant::kTabstripToolbarOverlap] = 1;
++    layout_constant_values[(int)LayoutConstant::kToolbarButtonHeight] = touch_ui ? 48 : 34;
++    layout_constant_values[(int)LayoutConstant::kToolbarButtonIconSize] = touch_ui ? kDefaultTouchableIconSize
++                                                                     : kDefaultIconSizeChromeRefresh;
++    layout_constant_values[(int)LayoutConstant::kToolbarDividerCornerRadius] = 1;
++    layout_constant_values[(int)LayoutConstant::kToolbarDividerHeight] = touch_ui ? 20 : 16;
++    layout_constant_values[(int)LayoutConstant::kToolbarDividerSpacing] = 9;
++    layout_constant_values[(int)LayoutConstant::kToolbarDividerWidth] = 2;
++    layout_constant_values[(int)LayoutConstant::kToolbarElementPadding] = touch_ui ? 0 : 4;
++    layout_constant_values[(int)LayoutConstant::kToolbarIconDefaultMargin] = touch_ui ? 0 : 2;
++    layout_constant_values[(int)LayoutConstant::kLocationBarMargin] = touch_ui ? 12 : 9;
++    layout_constant_values[(int)LayoutConstant::kSidePanelInset] = 8;
++    layout_constant_values[(int)LayoutConstant::kPageInfoIconSize] = 20;
++    layout_constant_values[(int)LayoutConstant::kDownloadIconSize] = 20;
++    layout_constant_values[(int)LayoutConstant::kMainBackgroundRegionCornerRadius] = 8;
++    layout_constant_values[(int)LayoutConstant::kToolbarCornerRadius] = 8;
++    layout_constant_values[(int)LayoutConstant::kVerticalTabCornerRadius] = 8;
++    layout_constant_values[(int)LayoutConstant::kVerticalTabHeight] = 30;
++    layout_constant_values[(int)LayoutConstant::kVerticalTabPinnedHeight] = 32;
++    layout_constant_values[(int)LayoutConstant::kVerticalTabMinWidth] = 32;
++    layout_constant_values[(int)LayoutConstant::kVerticalTabStripHorizontalPadding] = 12;
++    layout_constant_values[(int)LayoutConstant::kVerticalTabStripUncollapsedVerticalPadding] = 12;
++    layout_constant_values[(int)LayoutConstant::kVerticalTabStripCollapsedVerticalPadding] = 8;
++    layout_constant_values[(int)LayoutConstant::kVerticalTabStripComboButtonIconSize] = 18;
++    layout_constant_values[(int)LayoutConstant::kVerticalTabStripButtonIconSize] = 20;
++    layout_constant_values[(int)LayoutConstant::kVerticalTabStripTopButtonPadding] = 4;
++    layout_constant_values[(int)LayoutConstant::kVerticalTabStripFlatEdgeButtonPadding] = 2;
++    layout_constant_values[(int)LayoutConstant::kVerticalTabStripTopButtonContainerHeight] = 28;
++    layout_constant_values[(int)LayoutConstant::kVerticalTabStripNewTabButtonSize] = 32;
++    layout_constant_values[(int)LayoutConstant::kVerticalTabStripCollapseButtonSize] = 32;
++    layout_constant_values[(int)LayoutConstant::kVerticalTabStripTopContainerButtonSize] = 28;
++    layout_constant_values[(int)LayoutConstant::kVerticalTabPinnedBorderThickness] = 1;
++    if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "v60" ||
++        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "rectangular") {
++        layout_constant_values[(int)LayoutConstant::kTabWidth] = 193;
++    } else {
++        layout_constant_values[(int)LayoutConstant::kTabWidth] = 240;     
++    }
++    layout_constant_values[(int)LayoutConstant::kTabHorizontalPadding] = 8;
++    layout_constant_values[(int)LayoutConstant::kTabVerticalPadding] = 6;
++    layout_constant_values[(int)LayoutConstant::kTabTopCornerRadius] = 10;
++    layout_constant_values[(int)LayoutConstant::kTabBottomCornerRadius] = 12;
++    layout_constant_values[(int)LayoutConstant::kTabStripMaximizedAntiPadding] = 4;
++    if (base::CommandLine::ForCurrentProcess()->HasSwitch("compact-tab-ui")) {
++        layout_constant_values[(int)LayoutConstant::kTabFaviconYOffset] = 8;
++    } else if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "") {
++        layout_constant_values[(int)LayoutConstant::kTabFaviconYOffset] = 10;
++    } else {
++        layout_constant_values[(int)LayoutConstant::kTabFaviconYOffset] = 12;
++    }
++    if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "") {
++        layout_constant_values[(int)LayoutConstant::kTabFaviconXOffset] = 12;
++    } else {
++        layout_constant_values[(int)LayoutConstant::kTabFaviconXOffset] = 5;
++    }
++    layout_constant_values[(int)LayoutConstant::kTabCloseButtonXOffset] = 8;
++    if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "v60") {
++        layout_constant_values[(int)LayoutConstant::kTabCloseButtonXOffset] = 14;
++    } else {
++        layout_constant_values[(int)LayoutConstant::kTabCloseButtonXOffset] = 8;
++    }
++    if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "v60") {
++        layout_constant_values[(int)LayoutConstant::kTabStripPadWhenMaximized] = 1;
++        layout_constant_values[(int)LayoutConstant::kTabOverlap] = 11;
++    } else if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "rectangular") {
++        layout_constant_values[(int)LayoutConstant::kTabStripPadWhenMaximized] = 0;
++        layout_constant_values[(int)LayoutConstant::kTabOverlap] = 8;
++    } else if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "cr23") {
++        layout_constant_values[(int)LayoutConstant::kTabStripPadWhenMaximized] = 1;
++        layout_constant_values[(int)LayoutConstant::kTabOverlap] = 12;
++    } else {
++        layout_constant_values[(int)LayoutConstant::kTabStripPadWhenMaximized] = 0;
++        layout_constant_values[(int)LayoutConstant::kTabOverlap] = 16;
++    }
++    layout_constant_values[(int)LayoutConstant::kTabSeparatorOffset] = 0;
++    if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "rectangular" ||
++        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "v60") {
++        layout_constant_values[(int)LayoutConstant::kTabHardBorder] = 1;
++    } else {
++        layout_constant_values[(int)LayoutConstant::kTabHardBorder] = 0;
++    }
++    if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "cr23") {
++        layout_constant_values[(int)LayoutConstant::kDrawLeftTabSeparator] = 0;
++    } else {
++        layout_constant_values[(int)LayoutConstant::kDrawLeftTabSeparator] = 1;
++    }
++    layout_constant_values[(int)LayoutConstant::kDrawRightTabSeparator] = 1;
++    layout_constant_values[(int)LayoutConstant::kTabCloseButtonYOffset] = 0;
++    layout_constant_values[(int)LayoutConstant::kTabTitleYOffset] = 0;
+ }
+ 
+ gfx::Insets GetLayoutInsets(LayoutInset inset) {
+@@ -233,3 +253,53 @@ gfx::Insets GetLayoutInsets(LayoutInset inset) {
+   }
+   NOTREACHED();
+ }
++
++bool g_layout_constants_initialized = false;
++
++void SetLayoutConstants() {
++  /*
++     Due to poor performance reported by some users, the ability to update user metrics "live"
++     will be disabled by default. One update close to launch should be sufficient.
++  */
++  if (g_layout_constants_initialized &&
++      !base::CommandLine::ForCurrentProcess()->HasSwitch("enable-advanced-customization"))
++      return;
++
++  g_layout_constants_initialized = true;
++  SetLayoutConstantsFallback();
++
++  base::FilePath userdir;
++  if (!base::PathService::Get(chrome::DIR_USER_DATA, &userdir))
++      return; // Things are seriously wrong if the user data directory cannot be located.
++  const base::FilePath userpath = userdir.Append(FILE_PATH_LITERAL("scs"));
++  std::string bufstr;
++  base::ReadFileToString(userpath, &bufstr);
++
++  if (bufstr.empty()) {
++      return;
++  }
++
++  for (int i = 0; i < (int)LayoutConstant::kLast; i++)
++  {
++      // In scs, each layout "constant" is identified by its index in the LayoutConstant enum.
++      // This may mean that the index corresponding to a constant may change from version to version, 
++      // but it does simplify the parsing process.
++	  std::string layout_name = std::string("int_layout_constant_") + std::string("{");
++      std::string::size_type layout_setting_pos = bufstr.find(layout_name, 0);
++      if (layout_setting_pos == std::string::npos) {
++          continue;
++      }
++      std::string constant_val = bufstr.substr(layout_setting_pos + layout_name.length());
++	  constant_val = constant_val.substr(0, constant_val.find("}"));
++      if(!std::all_of(constant_val.begin(), constant_val.end(), [](char c) {return c >= '0' && c <= '9';}))
++          continue;
++      layout_constant_values[i] = std::stoi(constant_val);
++  }
++  layout_constant_values[(int)LayoutConstant::kTabStripHeight] = layout_constant_values[(int)LayoutConstant::kTabHeight] + 
++                                                            layout_constant_values[(int)LayoutConstant::kTabStripPadding];
++ }
++ 
++int GetLayoutConstant(LayoutConstant constant) {
++  int result = layout_constant_values[(int)constant];
++  return result;
++ }
+\ No newline at end of file
+diff --git a/chrome/browser/ui/layout_constants.h b/chrome/browser/ui/layout_constants.h
+index 608a5c38e6dd8..b8e3359a31c5c 100644
+--- a/chrome/browser/ui/layout_constants.h
++++ b/chrome/browser/ui/layout_constants.h
+@@ -265,7 +265,60 @@ enum class LayoutConstant {
+   // The size of page action icons in a web app title bar.
+   kWebAppPageActionIconSize,
+ 
+-  kLast = kWebAppPageActionIconSize
++  // The maxiumum length of a tab.
++  kTabWidth,
++
++  // Horizontal padding for the tab label.
++  kTabHorizontalPadding,
++
++  // Vertical padding for the tab label.
++  kTabVerticalPadding,
++
++  // Top corner radius of the tab.
++  kTabTopCornerRadius,
++
++  // Bottom corner radius. Used to determine tab insets as well.
++  kTabBottomCornerRadius,
++
++  // The padding to be subtracted from the tab strip when the window is maximized.
++  kTabStripMaximizedAntiPadding,
++
++  // y-offset of the tab favicon. Useful for compact tabs.
++  kTabFaviconYOffset,
++
++  // x-offset of the tab favicon. Useful for compact tabs.
++  kTabFaviconXOffset,
++
++  // x-offset of the tab close button. Adjust leftward to ensure that protruding tab shapes can scale properly.
++  kTabCloseButtonXOffset,
++
++  // A boolean value used to determine whether to apply padding to the tab strip when the window is maximized.
++  kTabStripPadWhenMaximized,
++
++  // This determines the overlap between tabs.
++  kTabOverlap,
++
++  // This can be used to define an offset for the x-position of the tab separator.
++  kTabSeparatorOffset,
++
++  // A boolean value used to determine whether a solid black border should appear around tabs.
++  kTabHardBorder,
++
++  // A boolean value used to draw the left tab separator, which may not be desireable in cases
++  // where there are wide gaps between tabs.
++  kDrawLeftTabSeparator,
++
++  // A boolean value used to draw the right tab separator, which may not be desireable in cases 
++  // where there are wide gaps between tabs.
++  kDrawRightTabSeparator,
++
++  // y-offset of the tab close button.
++  kTabCloseButtonYOffset,
++
++  // y-offset of the tab title.
++  kTabTitleYOffset,
++
++  kLast
+ };
+ 
+ enum LayoutInset {
+@@ -342,4 +395,14 @@ int GetLayoutConstant(LayoutConstant constant);
+ 
+ gfx::Insets GetLayoutInsets(LayoutInset inset);
+ 
++void SetLayoutConstants();
++
++// This is a way of ensuring that tabs are drawn to the top of the window
++// in fullscreen or maximized mode. Many parts of the code that access
++// TAB_STRIP_PADDING cannot tell if the tabs are maximized or not some
++// this is called by the code that is "aware" of the circumstance.
++void SetTabStripFullscreen();
++
++void SetTabStripWindowed();
++
+ #endif  // CHROME_BROWSER_UI_LAYOUT_CONSTANTS_H_
+diff --git a/chrome/browser/ui/views/tabs/tab.cc b/chrome/browser/ui/views/tabs/tab.cc
+index f80c98d3bd162..8b6097a7646e2 100644
+--- a/chrome/browser/ui/views/tabs/tab.cc
++++ b/chrome/browser/ui/views/tabs/tab.cc
+@@ -14,6 +14,7 @@
+ #include <string_view>
+ #include <utility>
+ 
++#include "base/command_line.h"
+ #include "base/debug/alias.h"
+ #include "base/functional/bind.h"
+ #include "base/i18n/rtl.h"
+@@ -257,6 +258,11 @@ Tab::Tab(tabs::TabHandle handle, TabSlotController* controller)
+ 
+   SetID(VIEW_ID_TAB);
+ 
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("chrome-refresh-2023-top-chrome-font")) {
++     title_->SetTextContext(views::style::CONTEXT_LABEL);
++     title_->SetTextStyle(views::style::STYLE_BODY_4_EMPHASIS);
++  }
++
+   AddChildViewRaw(title_.get());
+ 
+   SetEventTargeter(std::make_unique<views::ViewTargeter>(this));
+@@ -402,7 +408,10 @@ void Tab::Layout(PassKey) {
+ 
+   // The bounds for the favicon will include extra width for the attention
+   // indicator, but visually it will be smaller at kFaviconSize wide.
+-  gfx::Rect favicon_bounds(start, contents_rect.y(), 0, 0);
++  gfx::Rect favicon_bounds(start + GetLayoutConstant(LayoutConstant::kTabFaviconXOffset), 
++                           GetLayoutConstant(LayoutConstant::kTabFaviconYOffset), 0, 0);
++  if (favicon_bounds.right() >= (contents_rect.right() - (GetLayoutConstant(LayoutConstant::kTabFaviconXOffset) * 4)))
++      favicon_bounds.set_x(favicon_bounds.x() - GetLayoutConstant(LayoutConstant::kTabFaviconXOffset));
+   if (showing_icon_) {
+     if (center_icon_) {
+       // When centering the favicon, the favicon is allowed to escape the normal
+@@ -424,7 +433,7 @@ void Tab::Layout(PassKey) {
+   const int after_title_padding =
+       GetLayoutConstant(LayoutConstant::kTabAfterTitlePadding);
+ 
+-  int close_x = contents_rect.right();
++  int close_x = contents_rect.right() - 18 + GetLayoutConstant(LayoutConstant::kTabCloseButtonXOffset);
+   if (showing_close_button_) {
+     // The visible size is the button's hover shape size. The actual size
+     // includes the border insets for the button.
+@@ -436,7 +445,8 @@ void Tab::Layout(PassKey) {
+     // The close button is vertically centered in the contents_rect.
+     const int top =
+         contents_rect.y() +
+-        Center(contents_rect.height(), close_button_actual_size.height());
++        Center(contents_rect.height(), close_button_actual_size.height())
++        + GetLayoutConstant(LayoutConstant::kTabCloseButtonYOffset);
+ 
+     // The visible part of the close button should be placed against the
+     // right of the contents rect unless the tab is so small that it would
+@@ -515,8 +525,8 @@ void Tab::Layout(PassKey) {
+     const int title_width = std::max(title_right - title_left, 0);
+     // The Label will automatically center the font's cap height within the
+     // provided vertical space.
+-    const gfx::Rect title_bounds(title_left, GetLocalBounds().y(), title_width,
+-                                 GetLocalBounds().height());
++    const gfx::Rect title_bounds(title_left, GetLocalBounds().y() + GetLayoutConstant(LayoutConstant::kTabTitleYOffset), 
++                                 title_width, GetLocalBounds().height());
+     show_title = title_width > 0;
+ 
+     if (title_bounds != target_title_bounds_) {
+@@ -655,7 +665,11 @@ void Tab::OnMouseReleased(const ui::MouseEvent& event) {
+   // Close tab on middle click, but only if the button is released over the tab
+   // (normal windows behavior is to discard presses of a UI element where the
+   // releases happen off the element).
+-  if (event.IsOnlyMiddleMouseButton()) {
++  if (event.IsOnlyMiddleMouseButton() ||
++    // Close tab on double click, mirror of IsOnlyMiddleMouseButton
++    // Based on gz83's work.
++    ((event.IsOnlyLeftMouseButton() && event.GetClickCount() == 2) &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch("double-click-close-tab"))) {
+     if (HitTestPoint(event.location())) {
+       controller_->CloseTab(this, CloseTabSource::kFromMouse);
+     } else if (closing_) {
+@@ -1113,7 +1127,8 @@ void Tab::UpdateIconVisibility() {
+   // left that needs to be considered.
+   const int close_button_width =
+       GetLayoutConstant(LayoutConstant::kTabCloseButtonSize) +
+-      GetLayoutConstant(LayoutConstant::kTabAfterTitlePadding);
++      GetLayoutConstant(LayoutConstant::kTabAfterTitlePadding) +
++      GetLayoutConstant(LayoutConstant::kTabCloseButtonXOffset);
+   const bool large_enough_for_close_button =
+       available_width >= (touch_ui ? kTouchMinimumContentsWidthForCloseButtons
+                                    : kMinimumContentsWidthForCloseButtons);
+@@ -1160,9 +1175,11 @@ void Tab::UpdateIconVisibility() {
+       }
+     }
+ 
+-    if (showing_close_button_) {
++	if (base::CommandLine::ForCurrentProcess()->HasSwitch("hide-tab-close-buttons")) {
++      showing_close_button_ = false;
++    } else {
+       available_width -= close_button_width;
+-    }
++	}
+ 
+     showing_alert_indicator_ =
+         has_alert_icon && alert_icon_width <= available_width;
+@@ -1196,6 +1213,8 @@ void Tab::UpdateIconVisibility() {
+         large_enough_for_close_button &&
+         (!is_decluttered || mouse_hovered_ || HasFocus() ||
+          (close_button_ && close_button_->HasFocus()));
++	if (base::CommandLine::ForCurrentProcess()->HasSwitch("hide-tab-close-buttons"))
++      showing_close_button_ = false;
+     if (showing_close_button_) {
+       available_width -= close_button_width;
+     }
+diff --git a/chrome/browser/ui/views/tabs/tab_container_impl.cc b/chrome/browser/ui/views/tabs/tab_container_impl.cc
+index cbc185f05617d..a3b1d60a897ef 100644
+--- a/chrome/browser/ui/views/tabs/tab_container_impl.cc
++++ b/chrome/browser/ui/views/tabs/tab_container_impl.cc
+@@ -505,6 +505,9 @@ std::optional<int> TabContainerImpl::GetModelIndexOf(
+ }
+ 
+ Tab* TabContainerImpl::GetTabAtModelIndex(int index) const {
++  if (!tabs_view_model_.view_size()) {
++    return nullptr;
++  }
+   return tabs_view_model_.view_at(index);
+ }
+ 
+diff --git a/chrome/browser/ui/views/tabs/tab_search_button.cc b/chrome/browser/ui/views/tabs/tab_search_button.cc
+index c62091a212ecf..438f68dcd69f6 100644
+--- a/chrome/browser/ui/views/tabs/tab_search_button.cc
++++ b/chrome/browser/ui/views/tabs/tab_search_button.cc
+@@ -21,8 +21,8 @@
+ #include "ui/views/view_class_properties.h"
+ 
+ namespace {
+-constexpr int kCRTabSearchCornerRadius = 10;
+-constexpr int kCRTabSearchFlatCornerRadius = 4;
++constexpr int kCRTabSearchCornerRadius = 16;
++constexpr int kCRTabSearchFlatCornerRadius = 0;
+ }  // namespace
+ 
+ TabSearchButton::TabSearchButton(
+diff --git a/chrome/browser/ui/views/tabs/tab_strip.cc b/chrome/browser/ui/views/tabs/tab_strip.cc
+index dc2fe4f2e1f7e..37bbb2e797eb1 100644
+--- a/chrome/browser/ui/views/tabs/tab_strip.cc
++++ b/chrome/browser/ui/views/tabs/tab_strip.cc
+@@ -19,6 +19,7 @@
+ 
+ #include "base/check.h"
+ #include "base/compiler_specific.h"
++#include "base/command_line.h"
+ #include "base/containers/adapters.h"
+ #include "base/containers/flat_map.h"
+ #include "base/feature_list.h"
+@@ -1997,6 +1998,8 @@ void TabStrip::OnGroupContentsChanged(const tab_groups::TabGroupId& group) {
+ 
+ void TabStrip::UpdateHoverCard(HoverCardAnchorTarget* anchor_target,
+                                HoverCardUpdateType update_type) {
++  if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("tab-hover-cards") == "tooltip" ||
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("tab-hover-cards") == "none") return;
+   if (tab_container_) {
+     tab_container_->UpdateHoverCard(anchor_target, update_type);
+   }
+@@ -2208,6 +2211,7 @@ void TabStrip::TabContextMenuController::ShowContextMenuForViewImpl(
+ 
+ void TabStrip::Init() {
+   SetID(VIEW_ID_TAB_STRIP);
++  SetLayoutConstants();
+   // So we only get enter/exit messages when the mouse enters/exits the whole
+   // tabstrip, even if it is entering/exiting a specific Tab, too.
+   SetNotifyEnterExitOnChild(true);
+diff --git a/chrome/browser/ui/views/tabs/tab_style_views.cc b/chrome/browser/ui/views/tabs/tab_style_views.cc
+index 44a60df681ef2..3dd5d740914d5 100644
+--- a/chrome/browser/ui/views/tabs/tab_style_views.cc
++++ b/chrome/browser/ui/views/tabs/tab_style_views.cc
+@@ -8,10 +8,13 @@
+ #include <cmath>
+ #include <utility>
+ 
++#include "base/command_line.h"
++#include "base/files/file_util.h"
+ #include "base/check_is_test.h"
+ #include "base/i18n/rtl.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/numerics/safe_conversions.h"
++#include "base/path_service.h"
+ #include "base/strings/strcat.h"
+ #include "base/strings/string_util.h"
+ #include "cc/paint/paint_flags.h"
+@@ -33,6 +36,7 @@
+ #include "chrome/browser/ui/views/tabs/tab_group_underline.h"
+ #include "chrome/browser/ui/views/tabs/tab_slot_controller.h"
+ #include "chrome/browser/ui/views/tabs/tab_slot_view.h"
++#include "chrome/common/chrome_paths.h"
+ #include "chrome/grit/theme_resources.h"
+ #include "components/tab_groups/tab_group_visual_data.h"
+ #include "third_party/skia/include/core/SkPath.h"
+@@ -50,7 +54,128 @@
+ #include "ui/gfx/scoped_canvas.h"
+ #include "ui/views/controls/focus_ring.h"
+ #include "ui/views/widget/widget.h"
++/*
++typedef struct DataItem {
++	int datakey; // index of point on the tab
++	std::vector<float> values; // 
++}DataItem;
++
++bool GetTabCustomStr(std::string& tabstr, bool IsActive, bool IsPinned, bool IsFirst) {
++    base::FilePath userdir;
++    if(!base::PathService::Get(chrome::DIR_USER_DATA, &userdir))
++        return false; // Things are seriously wrong if the user data directory cannot be located.
++    const base::FilePath userpath = userdir.Append(FILE_PATH_LITERAL("scs"));
++    std::string bufstr;
++    base::ReadFileToString(userpath, &bufstr);
++
++    if (bufstr.empty())
++        return false;
++    std::string::size_type sectionstart = bufstr.find("tab");
++    std::string::size_type sectionend = bufstr.find("endtab");
++
++    std::string::size_type fallbacksectionstart = sectionstart;
++    std::string::size_type fallbacksectionend = sectionend;
++
++    if (IsPinned) {
++        sectionstart = bufstr.find("pinnedtab");
++      sectionend = bufstr.find("endpinnedtab");
++      if (sectionstart == std::string::npos || sectionend == std::string::npos) {
++         sectionstart = fallbacksectionstart;
++         sectionend = fallbacksectionend;
++      }
++   }
++
++   if (IsActive) {
++      sectionstart = bufstr.find("activetab");
++      sectionend = bufstr.find("endactivetab");
++      if (sectionstart == std::string::npos || sectionend == std::string::npos) {
++         sectionstart = fallbacksectionstart;
++         sectionend = fallbacksectionend;
++      }
++   } else {
++      sectionstart = bufstr.find("inactivetab");
++      sectionend = bufstr.find("endinactivetab");
++      if (sectionstart == std::string::npos || sectionend == std::string::npos) {
++         sectionstart = fallbacksectionstart;
++         sectionend = fallbacksectionend;
++      }      
++   }
++   
++   if (IsFirst) {
++      sectionstart = bufstr.find("firsttab");
++      sectionend = bufstr.find("endfirsttab");
++      if (sectionstart == std::string::npos || sectionend == std::string::npos) {
++         sectionstart = fallbacksectionstart;
++         sectionend = fallbacksectionend;
++      }
++   }
++   
++   if (sectionstart == std::string::npos || sectionend == std::string::npos)
++      return false;
++   
++    tabstr.append(bufstr.substr(sectionstart, sectionend - sectionstart).c_str());
++    return true;
++}
+ 
++bool UserDefinedTabShape(SkPathBuilder& path, std::string& sectionContent, float left, float tab_top, int tab_width) {
++    std::string::size_type pos = 0;
++    while ((pos = sectionContent.find("{", pos)) != std::string::npos) {
++        std::string::size_type endPos = sectionContent.find("}", pos);
++        if (endPos == std::string::npos) {
++            break;
++        }
++
++        std::string dataItemStr = sectionContent.substr(pos + 1, endPos - pos - 1);
++        std::string::size_type equalPos = dataItemStr.find('=');
++
++        if (equalPos != std::string::npos) {
++            DataItem dataItem;
++         std::string key = dataItemStr.substr(0, equalPos);
++         if(!std::all_of(key.begin(), key.end(), [](char c) {return c >= '0' && c <= '9';}))
++             break;
++            dataItem.datakey = std::stoi(key);
++            std::string valuesStr = dataItemStr.substr(equalPos + 1);
++
++            // Parse the values
++            std::istringstream valuesStream(valuesStr);
++            std::string value;
++            while (std::getline(valuesStream, value, ',')) {
++            if(!std::all_of(value.begin(), value.end(), [](char c) {return (c >= '0' && c <= '9') || c == '.';}))
++               break; // No exceptions, so we must verify that there are only integers in the value before continuing.
++                       // If not, the config file is considered to be "compromised" and needs to be replaced or fixed.
++                     // We will not tolerate any unexpected values in the data.
++            if(value.size() > 6)
++               break; // Any "unnecessarily large" numbers will also be blocked.
++            float val = std::stof(value);
++
++                dataItem.values.push_back(val);
++            }
++         
++         if (dataItem.values.size() != 6)
++            break; // Fail if there is an incorrect quantity of values in the data item.
++
++         int tab_shrunken_x_offset = std::max(0, GetLayoutConstant(LayoutConstant::kTabWidth) - tab_width);
++
++         if (tab_shrunken_x_offset > (GetLayoutConstant(LayoutConstant::kTabWidth) - 16))
++            tab_shrunken_x_offset = GetLayoutConstant(LayoutConstant::kTabWidth) - 16;
++
++         if (dataItem.datakey & 0x1)
++            dataItem.values.at(0) -= tab_shrunken_x_offset;
++         if (dataItem.datakey & 0x2)
++            dataItem.values.at(2) -= tab_shrunken_x_offset;
++         if (dataItem.datakey & 0x4)
++            dataItem.values.at(4) -= tab_shrunken_x_offset;
++
++         path.cubicTo(left + dataItem.values.at(0), tab_top + dataItem.values.at(1), left + dataItem.values.at(2), 
++                      tab_top + dataItem.values.at(3), left + dataItem.values.at(4), tab_top + dataItem.values.at(5));
++        }
++
++        pos = endPos + 1;
++    }
++   
++   return true;
++}
++*/
+ namespace {
+ class TabStyleViewsImpl : public TabStyleViews {
+  public:
+@@ -202,9 +327,15 @@ SkPath TabStyleViewsImpl::GetPath(TabStyle::PathType path_type,
+                                   const TabPathFlags& flags) const {
+   CHECK(tab());
+   const int stroke_thickness = GetStrokeThickness(flags.force_active);
+-
++  bool extend_to_top = false;
+   const TabStyle::TabSelectionState state = GetSelectionState();
+ 
++ if (tab_->GetWidget()->IsMaximized() || tab_->GetWidget()->IsFullscreen()) {
++    SetTabStripFullscreen();
++  } else {
++    SetTabStripWindowed();
++  }
++
+   // We'll do the entire path calculation in aligned pixels.
+   // TODO(dfried): determine if we actually want to use `stroke_thickness` as
+   // the inset in this case.
+@@ -213,20 +344,25 @@ SkPath TabStyleViewsImpl::GetPath(TabStyle::PathType path_type,
+ 
+   // Calculate the corner radii. Note that corner radius is based on original
+   // tab width (in DIP), not our new, scaled-and-aligned bounds.
+-  float content_corner_radius =
+-      GetTopCornerRadiusForWidth(tab()->width()) * scale;
+-  float extension_corner_radius = tab_style()->GetBottomCornerRadius() * scale;
++  float content_corner_radius = 0.0f;
++  float extension_corner_radius = 0.0f;
++  if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") != "rectangular") {
++    content_corner_radius =
++        GetTopCornerRadiusForWidth(tab()->width()) * scale;
++    extension_corner_radius = tab_style()->GetBottomCornerRadius() * scale;
++   }
+ 
+   const float separator_overlap = (tab_style()->GetSeparatorMargins().width() +
+                                    tab_style()->GetSeparatorSize().width()) *
+                                   scale;
+ 
+   // Selected, hover, and inactive tab fills are a detached squarcle tab.
+-  if ((path_type == TabStyle::PathType::kFill &&
++ if ((base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "cr23") &&
++      ((path_type == TabStyle::PathType::kFill &&
+        state != TabStyle::TabSelectionState::kActive) ||
+       path_type == TabStyle::PathType::kHighlight ||
+       path_type == TabStyle::PathType::kInteriorClip ||
+-      path_type == TabStyle::PathType::kHitTest) {
++      path_type == TabStyle::PathType::kHitTest)) {
+     float top_left_corner_radius = content_corner_radius;
+     float top_right_corner_radius = content_corner_radius;
+     float bottom_left_corner_radius = content_corner_radius;
+@@ -361,7 +497,26 @@ SkPath TabStyleViewsImpl::GetPath(TabStyle::PathType path_type,
+     content_corner_radius -= 0.5f * stroke_adjustment;
+     tab_bottom -= 0.5f * stroke_adjustment;
+     extension_corner_radius -= 0.5f * stroke_adjustment;
++  } else if (path_type == TabStyle::PathType::kHitTest) {
++    // Outside border needs to draw its bottom line a stroke width above the
++    // bottom of the tab, to line up with the stroke that runs across the rest
++    // of the bottom of the tab bar (when strokes are enabled).
++    tab_bottom -= stroke_adjustment;
++    extension_corner_radius -= stroke_adjustment;
++    if (tab_->GetWidget()->IsMaximized() || tab_->GetWidget()->IsFullscreen()) {
++      extend_to_top = true;
++      tab_top -= GetLayoutConstant(LayoutConstant::kTabStripMaximizedAntiPadding) * scale;
++      if (tab_ == tab_->controller()->tab_at(0)) {
++        // The path is not mirrored in RTL and thus we must manually choose the
++        // correct "leading" edge.
++        if (base::i18n::IsRTL())
++          tab_right = right;
++        else
++          tab_left = left;
++      }
++    }
+   }
++
+   const bool compact_left_to_bottom = ShouldCompactLeadingEdge(path_type);
+ 
+   float left_extension_corner_radius = extension_corner_radius;
+@@ -397,13 +552,69 @@ SkPath TabStyleViewsImpl::GetPath(TabStyle::PathType path_type,
+   // stroke width.
+ 
+   if (path_type == TabStyle::PathType::kBorder && tab()->split() &&
+-      !IsLeftSplitTab(tab())) {
++      !IsLeftSplitTab(tab()) && base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") != "v60") {
+     // Start with the top left side of the shape.
+     path.moveTo(left, tab_top);
+   } else {
+     // Start with the left side of the shape.
+     path.moveTo(left, extended_bottom);
+ 
++    if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") == "v60") {
++        path.moveTo(left, extended_bottom);
++        if (IsRightSplitTab(tab()))
++          path.moveTo(tab_left, extended_bottom);
++        if (extend_to_top) {
++          // Create the vertical extension by extending the side diagonals until
++          // they reach the top of the bounds.
++           if (!IsRightSplitTab(tab())) {
++              path.cubicTo(left, extended_bottom, (((tab_left + 5) + left) / 2), ((tab_top + extended_bottom) / 2), tab_left + 5,
++                         tab_top);
++           } else {
++              path.cubicTo(left, extended_bottom, left, ((tab_top + extended_bottom) / 2), left,
++                         tab_top);
++           }
++           if (!IsLeftSplitTab(tab())) {
++              path.lineTo(tab_right - 5, tab_top);
++              path.cubicTo(tab_right - 5, tab_top, (((tab_right - 5) + right) / 2), ((tab_top + extended_bottom) / 2), right,
++                      extended_bottom);
++           } else {
++              path.lineTo(tab_right, tab_top);
++              path.cubicTo(tab_right, tab_top, tab_right, ((tab_top + extended_bottom) / 2), tab_right,
++                      extended_bottom);
++           }
++        } else {
++           if (!IsRightSplitTab(tab())) {
++              path.cubicTo(left, extended_bottom, ((tab_left + left) / 2), (((tab_top * 0.5) + extended_bottom) / 2), tab_left,
++                       (tab_top * 0.5));
++           } else {
++              path.cubicTo(tab_left, extended_bottom, tab_left, (((tab_top * 0.5) + extended_bottom) / 2), tab_left,
++                       (tab_top * 0.5));
++           }
++           if (!IsLeftSplitTab(tab())) {
++              path.cubicTo(tab_left, (tab_top * 0.5), tab_left, tab_top * 0.5, tab_right, tab_top * 0.5);
++              path.cubicTo(tab_right, (tab_top * 0.5), (((tab_right - 2) + right) / 2), (((tab_top * 0.5) + extended_bottom) / 2), right,
++                      extended_bottom);
++           } else {
++              path.cubicTo(tab_left, (tab_top * 0.5), tab_left, tab_top * 0.5, tab_right, tab_top * 0.5);
++              path.cubicTo(tab_right, (tab_top * 0.5), tab_right, (((tab_top * 0.5) + extended_bottom) / 2), tab_right,
++                      extended_bottom);
++           }
++        }
++
++        path.close();
++        // Convert path to be relative to the tab origin.
++        gfx::PointF origin(tab_->origin());
++        origin.Scale(scale);
++        path.offset(-origin.x(), -origin.y());
++
++        // Possibly convert back to DIPs.
++        if (flags.render_units == TabStyle::RenderUnits::kDips && scale != 1.0f) {
++            path.transform(SkMatrix::Scale(1.0f / scale, 1.0f / scale));
++        }
++
++        return path.detach();
++    }
++
+     // Draw the left edge of the extension.
+     //   ╭─────────╮
+     //   │ Content │
+@@ -976,6 +1187,9 @@ void TabStyleViewsImpl::PaintTabBackgroundFill(
+     cc::PaintFlags flags;
+     flags.setAntiAlias(true);
+     flags.setColor(GetCurrentTabBackgroundColor(selection_state, hovered));
++	if (base::CommandLine::ForCurrentProcess()->HasSwitch("transparent-tabs") &&
++	    selection_state != TabStyle::TabSelectionState::kActive)
++		flags.setAlphaf(0.7f);
+     canvas->DrawRect(gfx::ScaleToEnclosingRect(tab_->GetLocalBounds(), scale),
+                      flags);
+   }
+@@ -997,6 +1211,15 @@ void TabStyleViewsImpl::PaintTabBackgroundFill(
+       (!features::IsGlassFrameEnabled() || GetHoverAnimationValue() > 0.0)) {
+     PaintBackgroundHover(canvas, scale);
+   }
++  if (GetLayoutConstant(LayoutConstant::kTabHardBorder)) {
++    cc::PaintFlags flags;
++    flags.setAntiAlias(true);
++    flags.setColor(SkColorSetRGB(0, 0, 0));
++    flags.setAlphaf(0.7f);
++    flags.setStyle(cc::PaintFlags::kStroke_Style);
++    canvas->DrawPath(fill_path,
++                     flags);
++  }
+ }
+ 
+ void TabStyleViewsImpl::PaintBackgroundHover(gfx::Canvas* canvas,
+@@ -1060,12 +1283,17 @@ void TabStyleViewsImpl::PaintSeparators(gfx::Canvas* canvas) const {
+ 
+   cc::PaintFlags flags;
+   flags.setAntiAlias(true);
+-  flags.setColor(separator_color(separator_opacities.left));
+-  canvas->DrawRoundRect(separator_bounds.leading,
+-                        tab_style()->GetSeparatorCornerRadius() * scale, flags);
+-  flags.setColor(separator_color(separator_opacities.right));
+-  canvas->DrawRoundRect(separator_bounds.trailing,
+-                        tab_style()->GetSeparatorCornerRadius() * scale, flags);
++  if (GetLayoutConstant(LayoutConstant::kDrawLeftTabSeparator)) {
++    flags.setColor(separator_color(separator_opacities.left));
++    canvas->DrawRoundRect(separator_bounds.leading,
++                          tab_style()->GetSeparatorCornerRadius() * scale, flags);
++  }
++  if (GetLayoutConstant(LayoutConstant::kDrawRightTabSeparator)
++      && tab()->controller()->GetAdjacentTab(tab(), 1)) {
++    flags.setColor(separator_color(separator_opacities.right));
++    canvas->DrawRoundRect(separator_bounds.trailing,
++                          tab_style()->GetSeparatorCornerRadius() * scale, flags);
++  }
+ }
+ 
+ bool TabStyleViewsImpl::IsLeftSplitTab(const Tab* tab) const {
+diff --git a/chrome/browser/ui/webui/webui_toolbar/webui_toolbar_layout_css_helper.cc b/chrome/browser/ui/webui/webui_toolbar/webui_toolbar_layout_css_helper.cc
+index bc7c354550ad4..5b7f8f47dfa5d 100644
+--- a/chrome/browser/ui/webui/webui_toolbar/webui_toolbar_layout_css_helper.cc
++++ b/chrome/browser/ui/webui/webui_toolbar/webui_toolbar_layout_css_helper.cc
+@@ -166,6 +166,8 @@ std::string_view LayoutConstantToCssVarName(LayoutConstant layout_constant) {
+       return "--web-app-menu-button-size";
+     case kWebAppPageActionIconSize:
+       return "--web-app-page-action-icon-size";
++    default:
++      break;
+   }
+   NOTREACHED();
+ }
+diff --git a/ui/gfx/paint_vector_icon.cc b/ui/gfx/paint_vector_icon.cc
+index eef47b4c9b8de..4522cdb37ba72 100644
+--- a/ui/gfx/paint_vector_icon.cc
++++ b/ui/gfx/paint_vector_icon.cc
+@@ -9,13 +9,18 @@
+ #include <tuple>
+ 
+ #include "base/containers/span.h"
++#include "base/files/file_util.h"
+ #include "base/i18n/rtl.h"
+ #include "base/lazy_instance.h"
+ #include "base/memory/raw_span.h"
+ #include "base/numerics/safe_conversions.h"
++#include "base/path_service.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_split.h"
+ #include "base/trace_event/trace_event.h"
+ #include "cc/paint/paint_canvas.h"
+ #include "cc/paint/paint_flags.h"
++#include "chrome/common/chrome_paths.h"
+ #include "third_party/skia/include/core/SkPath.h"
+ #include "third_party/skia/include/core/SkPathBuilder.h"
+ #include "third_party/skia/include/core/SkRRect.h"
+@@ -117,6 +122,66 @@ class PathParser {
+   size_t command_index_ = 0;
+ };
+ 
++// Translates a string such as "MOVE_TO" into a command such as MOVE_TO.
++CommandType CommandFromString(const std::string& source) {
++#define RETURN_IF_IS(command) \
++  if (source == #command)     \
++    return command;
++
++  RETURN_IF_IS(NEW_PATH);
++  RETURN_IF_IS(FILL_RULE_NONZERO);
++  RETURN_IF_IS(PATH_COLOR_ALPHA);
++  RETURN_IF_IS(PATH_COLOR_ARGB);
++  RETURN_IF_IS(PATH_MODE_CLEAR);
++  RETURN_IF_IS(STROKE);
++  RETURN_IF_IS(CAP_SQUARE);
++  RETURN_IF_IS(MOVE_TO);
++  RETURN_IF_IS(R_MOVE_TO);
++  RETURN_IF_IS(ARC_TO);
++  RETURN_IF_IS(R_ARC_TO);
++  RETURN_IF_IS(LINE_TO);
++  RETURN_IF_IS(R_LINE_TO);
++  RETURN_IF_IS(H_LINE_TO);
++  RETURN_IF_IS(R_H_LINE_TO);
++  RETURN_IF_IS(V_LINE_TO);
++  RETURN_IF_IS(R_V_LINE_TO);
++  RETURN_IF_IS(CUBIC_TO);
++  RETURN_IF_IS(R_CUBIC_TO);
++  RETURN_IF_IS(CUBIC_TO_SHORTHAND);
++  RETURN_IF_IS(QUADRATIC_TO);
++  RETURN_IF_IS(R_QUADRATIC_TO);
++  RETURN_IF_IS(QUADRATIC_TO_SHORTHAND);
++  RETURN_IF_IS(R_QUADRATIC_TO_SHORTHAND);
++  RETURN_IF_IS(CIRCLE);
++  RETURN_IF_IS(OVAL);
++  RETURN_IF_IS(ROUND_RECT);
++  RETURN_IF_IS(CLOSE);
++  RETURN_IF_IS(CANVAS_DIMENSIONS);
++  RETURN_IF_IS(CLIP);
++  RETURN_IF_IS(DISABLE_AA);
++  RETURN_IF_IS(FLIPS_IN_RTL);
++#undef RETURN_IF_IS
++
++  NOTREACHED() << "Unrecognized command: " << source;
++}
++
++std::vector<PathElement> PathFromSource(const std::string& source) {
++  std::vector<PathElement> path;
++  std::vector<std::string> pieces = base::SplitString(
++      source, "\n ,", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
++  for (const auto& piece : pieces) {
++    double value = 0;
++    int hex_value = 0;
++    if (base::StringToDouble(piece, &value)) {
++      path.push_back(PathElement(SkDoubleToScalar(value)));
++    } else if (base::HexStringToInt(piece, &hex_value))
++      path.push_back(PathElement(SkIntToScalar(hex_value)));
++    else
++      path.push_back(PathElement(CommandFromString(piece)));
++  }
++  return path;
++}
++
+ bool IsCommandTypeCurve(CommandType command) {
+   return command == CUBIC_TO || command == R_CUBIC_TO ||
+          command == CUBIC_TO_SHORTHAND || command == QUADRATIC_TO ||
+@@ -452,6 +517,24 @@ IconDescription::IconDescription(const VectorIcon& icon,
+ 
+ IconDescription::~IconDescription() {}
+ 
++bool GetCustomIconPath(std::string icon_name, std::vector<PathElement>& custompath)
++{
++    base::FilePath userdir;
++    if(!base::PathService::Get(chrome::DIR_USER_DATA, &userdir))
++        return false; // Things are seriously wrong if the user data directory cannot be located.
++    const base::FilePath userpath = userdir.Append(base::ASCIIToWide(icon_name));
++    std::string bufstr;
++    base::ReadFileToString(userpath, &bufstr);
++
++    if (bufstr.empty())
++        return false;
++    else
++    {
++        custompath = PathFromSource(bufstr);
++        return true;
++	}
++}
++
+ void PaintVectorIcon(Canvas* canvas, const VectorIcon& icon, SkColor color) {
+   PaintVectorIcon(canvas, icon, GetDefaultSizeOfVectorIcon(icon), color);
+ }
+@@ -466,7 +549,11 @@ void PaintVectorIcon(Canvas* canvas,
+   }
+   const int px_size = base::ClampCeil(canvas->image_scale() * dip_size);
+   const VectorIconRep* rep = GetRepForPxSize(icon, px_size);
+-  PaintPath(canvas, rep->path, dip_size, color);
++  std::vector<PathElement> custompath;
++  if (GetCustomIconPath(icon.name, custompath))
++      PaintPath(canvas, custompath, dip_size, color);
++  else
++      PaintPath(canvas, rep->path, dip_size, color);
+ }
+ 
+ ImageSkia CreateVectorIcon(const IconDescription& params) {
+diff --git a/ui/shell_dialogs/execute_select_file_win.cc b/ui/shell_dialogs/execute_select_file_win.cc
+index b9f46bd6ebf8d..0d0e4bf12d40e 100644
+--- a/ui/shell_dialogs/execute_select_file_win.cc
++++ b/ui/shell_dialogs/execute_select_file_win.cc
+@@ -4,16 +4,20 @@
+ 
+ #include "ui/shell_dialogs/execute_select_file_win.h"
+ 
++#include <Windows.h>
++#include <commdlg.h>
+ #include <shlobj.h>
+ #include <wrl/client.h>
+ 
+ #include <memory>
+ 
+ #include "base/check.h"
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "base/files/file.h"
+ #include "base/files/file_util.h"
+ #include "base/functional/callback.h"
++#include "base/logging.h"
+ #include "base/strings/string_util.h"
+ #include "base/threading/hang_watcher.h"
+ #include "base/win/com_init_util.h"
+@@ -26,6 +30,11 @@
+ #include "ui/shell_dialogs/select_file_utils_win.h"
+ #include "ui/strings/grit/ui_strings.h"
+ 
++#ifdef UNSAFE_BUFFERS_BUILD
++// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
++#pragma allow_unsafe_buffers
++#endif
++
+ namespace ui {
+ 
+ namespace {
+@@ -140,6 +149,221 @@ bool SetOptions(IFileDialog* file_dialog, DWORD dialog_options) {
+   return SUCCEEDED(file_dialog->SetOptions(options));
+ }
+ 
++// Configures a |file_dialog| object given the specified parameters.
++bool ConfigureDialog_Legacy(OPENFILENAME_NT4W* open_file_name,
++                     const std::u16string& title,
++					 const base::FilePath& default_path,
++                     const std::vector<FileFilterSpec>& filter,
++                     DWORD dialog_options) {
++  std::u16string filter_buffer;
++  open_file_name->lStructSize = sizeof(OPENFILENAME_NT4W);
++  // Set title.
++  if (!title.empty()) {
++    open_file_name->lpstrTitle = (LPCWSTR)title.c_str();
++  }
++  
++  if (dialog_options & FOS_ALLOWMULTISELECT) {
++	open_file_name->Flags |= OFN_ALLOWMULTISELECT;
++  }
++  
++  if (!default_path.empty()) {
++        open_file_name->lpstrInitialDir = (LPCWSTR)default_path.value().c_str();
++  }
++  
++  if (filter.empty())
++    return true;
++
++  open_file_name->lpstrFilter = NULL;
++  filter_buffer.clear();
++
++ for (const auto& filter_spec : filter) {
++	std::u16string filter_str = filter_spec.description;
++    filter_buffer.append(filter_str);
++	filter_buffer.push_back(0);
++	filter_str = filter_spec.extension_spec;
++	filter_buffer.append(filter_str);
++	filter_buffer.push_back(0);
++  }
++  filter_buffer.push_back(0);
++  
++  PWSTR c_filter_buffer = (PWSTR) ::HeapAlloc(::GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(WCHAR)*filter_buffer.length());
++  
++  for (size_t i = 0; i < filter_buffer.length(); i++)
++  {
++	  c_filter_buffer[i] = filter_buffer.at(i);
++  }
++  
++  open_file_name->lpstrFilter = c_filter_buffer;
++  
++  return true;
++}
++
++struct SelectFolderDialogOptions {
++  const wchar_t* default_path;
++  bool is_upload;
++};
++
++int CALLBACK BrowseCallbackProc(HWND window,
++                                UINT message,
++                                LPARAM parameter,
++                                LPARAM data) {
++  if (message == BFFM_INITIALIZED) {
++    SelectFolderDialogOptions* options =
++        reinterpret_cast<SelectFolderDialogOptions*>(data);
++    if (options->is_upload) {
++      SendMessage(window, BFFM_SETOKTEXT, 0,
++                  reinterpret_cast<LPARAM>(
++                      l10n_util::GetStringUTF16(
++                          IDS_SELECT_UPLOAD_FOLDER_DIALOG_UPLOAD_BUTTON)
++                          .c_str()));
++    }
++    if (options->default_path) {
++      SendMessage(window, BFFM_SETSELECTION, TRUE,
++                  reinterpret_cast<LPARAM>(options->default_path));
++    }
++  }
++  return 0;
++}
++
++// Runs a Folder selection dialog box, passes back the selected folder in |path|
++// and returns true if the user clicks OK. If the user cancels the dialog box
++// the value in |path| is not modified and returns false. Run on the dialog
++// thread.
++bool ExecuteFolder_Legacy(HWND owner,
++                           const std::u16string& title,
++                           const base::FilePath& default_path,
++                           std::vector<base::FilePath>* paths) {
++  base::FilePath result_path;
++  base::win::AssertComInitialized();
++  DCHECK(paths);
++  std::u16string new_title = title;
++  wchar_t dir_buffer[MAX_PATH + 1];
++
++  bool result = false;
++  BROWSEINFO browse_info = {};
++  browse_info.hwndOwner = owner;
++  browse_info.lpszTitle = (LPCWSTR)new_title.c_str();
++  browse_info.pszDisplayName = dir_buffer;
++  browse_info.ulFlags = BIF_USENEWUI | BIF_RETURNONLYFSDIRS;
++
++  // If uploading or a default path was provided, update the BROWSEINFO
++  // and set the callback function for the dialog so the strings can be set in
++  // the callback.
++  SelectFolderDialogOptions dialog_options = {};
++  if (!default_path.empty())
++    dialog_options.default_path = default_path.value().c_str();
++  browse_info.ulFlags |= BIF_NONEWFOLDERBUTTON;
++ 
++  if (dialog_options.default_path) {
++    browse_info.lParam = reinterpret_cast<LPARAM>(&dialog_options);
++    browse_info.lpfn = &BrowseCallbackProc;
++  }
++
++  LPITEMIDLIST list = SHBrowseForFolderW(&browse_info);
++  BaseShellDialogImpl::DisableOwner(owner);
++  if (list) {
++    STRRET out_dir_buffer = {};
++    out_dir_buffer.uType = STRRET_WSTR;
++    Microsoft::WRL::ComPtr<IShellFolder> shell_folder;
++    if (SUCCEEDED(SHGetDesktopFolder(&shell_folder))) {
++      HRESULT hr = shell_folder->GetDisplayNameOf(list, SHGDN_FORPARSING,
++                                                  &out_dir_buffer);
++      if (SUCCEEDED(hr) && out_dir_buffer.uType == STRRET_WSTR) {
++        paths->push_back(base::FilePath(out_dir_buffer.pOleStr));
++        CoTaskMemFree(out_dir_buffer.pOleStr);
++        result = true;
++      } else {
++        // Use old way if we don't get what we want.
++        wchar_t old_out_dir_buffer[MAX_PATH + 1];
++        if (SHGetPathFromIDList(list, old_out_dir_buffer)) {
++          paths->push_back(base::FilePath(old_out_dir_buffer));
++          result = true;
++        }
++      }
++
++      // According to MSDN, Win2000 will not resolve shortcuts, so we do it
++      // ourselves.
++      base::win::ResolveShortcut(paths->at(0), &paths->at(0), nullptr);
++	  
++    }
++    CoTaskMemFree(list);
++  }
++  return result;
++}
++
++// static
++std::vector<std::tuple<std::u16string, std::u16string>>
++GetFilters(const OPENFILENAME* openfilename) {
++  std::vector<std::tuple<std::u16string, std::u16string>> filters;
++
++  const char16_t* display_string = (char16_t*)openfilename->lpstrFilter;
++  if (!display_string) {
++    return filters;
++  }
++
++  while (*display_string) {
++    const char16_t* display_string_end = display_string;
++    while (*display_string_end)
++      ++display_string_end;
++    const char16_t* pattern = display_string_end + 1;
++    const char16_t* pattern_end = pattern;
++    while (*pattern_end)
++      ++pattern_end;
++    filters.push_back(
++        std::make_tuple(std::u16string(display_string, display_string_end),
++                  std::u16string(pattern, pattern_end)));
++    display_string = pattern_end + 1;
++  }
++
++  return filters;
++}
++
++// Given |extension|, if it's not empty, then remove the leading dot.
++std::wstring GetExtensionWithoutLeadingDot(const std::wstring& extension) {
++  DCHECK(extension.empty() || extension[0] == L'.');
++  return extension.empty() ? extension : extension.substr(1);
++}
++
++// This function takes the output of a SaveAs dialog: a filename, a filter and
++// the extension originally suggested to the user (shown in the dialog box) and
++// returns back the filename with the appropriate extension appended. If the
++// user requests an unknown extension and is not using the 'All files' filter,
++// the suggested extension will be appended, otherwise we will leave the
++// filename unmodified. |filename| should contain the filename selected in the
++// SaveAs dialog box and may include the path, |filter_selected| should be
++// '*.something', for example '*.*' or it can be blank (which is treated as
++// *.*). |suggested_ext| should contain the extension without the dot (.) in
++// front, for example 'jpg'.
++std::wstring AppendExtensionIfNeeded(const std::wstring& filename,
++                                     const std::wstring& filter_selected,
++                                     const std::wstring& suggested_ext) {
++  DCHECK(!filename.empty());
++  std::wstring return_value = filename;
++  LOG(ERROR) << filter_selected;
++  // If we wanted a specific extension, but the user's filename deleted it or
++  // changed it to something that the system doesn't understand, re-append.
++  // Careful: Checking net::GetMimeTypeFromExtension() will only find
++  // extensions with a known MIME type, which many "known" extensions on Windows
++  // don't have.  So we check directly for the "known extension" registry key.
++  std::wstring file_extension(
++      GetExtensionWithoutLeadingDot(base::FilePath(filename).Extension()));
++  std::wstring key(L"." + file_extension);
++  if (!(filter_selected.empty() || filter_selected == L"*.*") &&
++      !base::win::RegKey(HKEY_CLASSES_ROOT, key.c_str(), KEY_READ).Valid() &&
++      file_extension != suggested_ext) {
++    if (return_value.back() != L'.')
++      return_value.append(L".");
++    return_value.append(suggested_ext);
++  }
++
++  // Strip any trailing dots, which Windows doesn't allow.
++  size_t index = return_value.find_last_not_of(L'.');
++  if (index < return_value.size() - 1)
++    return_value.resize(index + 1);
++
++  return return_value;
++}
++
+ // Configures a |file_dialog| object given the specified parameters.
+ bool ConfigureDialog(IFileDialog* file_dialog,
+                      const std::u16string& title,
+@@ -183,56 +407,150 @@ bool RunSaveFileDialog(HWND owner,
+                        int* filter_index,
+                        base::FilePath* path) {
+   Microsoft::WRL::ComPtr<IFileSaveDialog> file_save_dialog;
++  bool use_legacy_dialogs = false;
++  OPENFILENAME_NT4W open_file_name = {0};
+   if (FAILED(::CoCreateInstance(CLSID_FileSaveDialog, nullptr,
+                                 CLSCTX_INPROC_SERVER,
+                                 IID_PPV_ARGS(&file_save_dialog)))) {
+-    return false;
+-  }
+-
+-  if (!ConfigureDialog(file_save_dialog.Get(), title, std::u16string(),
+-                       default_path, filter, *filter_index, dialog_options)) {
+-    return false;
++    use_legacy_dialogs = true;
+   }
+ 
+-  file_save_dialog->SetDefaultExtension(def_ext.c_str());
+-
+-  // This handler auto-closes the file dialog if its owner window is closed.
+-  auto auto_close_dialog_event_handler =
+-      std::make_unique<ScopedAutoCloseDialogEventHandler>(
+-          owner, file_save_dialog.Get());
+-
+-  // Never consider the current scope as hung. The hang watching deadline (if
+-  // any) is not valid since the user can take unbounded time to choose the
+-  // file.
+-  base::HangWatcher::InvalidateActiveExpectations();
+-
+-  HRESULT hr = file_save_dialog->Show(owner);
+-  BaseShellDialogImpl::DisableOwner(owner);
+-
+-  // Remove the event handler regardless of the return value of Show().
+-  auto_close_dialog_event_handler = nullptr;
+-
+-  if (FAILED(hr))
+-    return false;
+-
+-  UINT file_type_index;
+-  if (FAILED(file_save_dialog->GetFileTypeIndex(&file_type_index)))
+-    return false;
+-
+-  *filter_index = static_cast<int>(file_type_index);
+-
+-  Microsoft::WRL::ComPtr<IShellItem> result;
+-  if (FAILED(file_save_dialog->GetResult(&result)))
+-    return false;
+-
+-  base::win::ScopedCoMem<wchar_t> display_name;
+-  if (FAILED(result->GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING,
+-                                    &display_name))) {
+-    return false;
++  if (!use_legacy_dialogs) {
++	  if (!ConfigureDialog(file_save_dialog.Get(), title, std::u16string(),
++						   default_path, filter, *filter_index, dialog_options)) {
++		return false;
++	  }
++	} else {
++ 	  ConfigureDialog_Legacy(&open_file_name, title, default_path, filter, dialog_options);
++   }
++  if (!use_legacy_dialogs) {
++	  file_save_dialog->SetDefaultExtension(def_ext.c_str());
++   
++	  // This handler auto-closes the file dialog if its owner window is closed.
++	  auto auto_close_dialog_event_handler =
++		  std::make_unique<ScopedAutoCloseDialogEventHandler>(
++			  owner, file_save_dialog.Get());
++	  // Never consider the current scope as hung. The hang watching deadline (if
++	  // any) is not valid since the user can take unbounded time to choose the
++	  // file.
++      base::HangWatcher::InvalidateActiveExpectations();
++	  HRESULT hr = file_save_dialog->Show(owner);
++	  BaseShellDialogImpl::DisableOwner(owner);
++
++	  // Remove the event handler regardless of the return value of Show().
++	  auto_close_dialog_event_handler = nullptr;
++
++	  if (FAILED(hr))
++		return false;
++
++	  UINT file_type_index;
++	  if (FAILED(file_save_dialog->GetFileTypeIndex(&file_type_index)))
++		return false;
++
++	  *filter_index = static_cast<int>(file_type_index);
++
++	  Microsoft::WRL::ComPtr<IShellItem> result;
++	  if (FAILED(file_save_dialog->GetResult(&result)))
++		return false;
++
++	  base::win::ScopedCoMem<wchar_t> display_name;
++	  if (FAILED(result->GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING,
++										&display_name))) {
++		return false;
++	  }
++
++	  *path = base::FilePath(display_name.get());
++	  return true;
++  } else {
++	  base::HangWatcher::InvalidateActiveExpectations();
++	  open_file_name.hwndOwner = owner;
++	  open_file_name.Flags |= OFN_OVERWRITEPROMPT | OFN_EXPLORER |
++							  OFN_ENABLESIZING | OFN_NOCHANGEDIR |
++						      OFN_PATHMUSTEXIST;
++      wchar_t filename_buffer [UNICODE_STRING_MAX_CHARS];
++	  filename_buffer[0] = L'\0';
++	  if (!default_path.empty()) {
++		base::FilePath suggested_file_name;
++		base::FilePath suggested_directory;
++		if (IsDirectory(default_path)) {
++		  suggested_directory = default_path;
++		} else {
++		  suggested_directory = default_path.DirName();
++		  suggested_file_name = default_path.BaseName();
++		  // If the default_path is a root directory, |suggested_file_name| will be
++		  // '\', and the call to GetSaveFileName below will fail.
++		  if (suggested_file_name.value() == L"\\")
++			suggested_file_name.clear();
++		}
++		  open_file_name.lpstrInitialDir = NULL;
++
++		  if (!suggested_directory.empty()) {
++		  open_file_name.lpstrInitialDir = suggested_directory.value().c_str();
++
++			  if (!suggested_file_name.empty()) {
++			  // The filename is ignored if no initial directory is supplied.
++				  base::wcslcpy(filename_buffer,
++								suggested_file_name.value().c_str(),
++								sizeof(filename_buffer));
++			  }
++		  }
++	  }
++	  open_file_name.lpstrFile = filename_buffer;
++	  open_file_name.nMaxFile = UNICODE_STRING_MAX_CHARS;
++      if (!filter.empty() && ((int)filter.size() - 1) < *filter_index) {
++            *filter_index = filter.size() - 1;
++          }
++	 // open_file_name.lpstrFilter = 
++	//	  filter.empty() ? nullptr : (LPCWSTR)filter.at(*filter_index).extension_spec.c_str();
++	  open_file_name.nFilterIndex = *filter_index;
++	  open_file_name.lpstrDefExt = &def_ext[0];
++
++	  BOOL success = ::GetSaveFileNameW((OPENFILENAMEW*)&open_file_name);
++	  BaseShellDialogImpl::DisableOwner(owner);
++	  if (!success) {
++		if(open_file_name.lpstrFilter) {
++		  ::HeapFree(::GetProcessHeap(), 0, (LPVOID)open_file_name.lpstrFilter);
++		  open_file_name.lpstrFilter = nullptr;
++	    }
++		return false;
++	  }
++
++	  // Return the user's choice.
++	  //*path = base::FilePath(open_file_name.lpstrFile);
++	  *filter_index = open_file_name.nFilterIndex;
++
++	  // Figure out what filter got selected. The filter index is 1-based.
++	  std::u16string filter_selected;
++	  if (*filter_index > 0) {
++		std::vector<std::tuple<std::u16string, std::u16string>> filters =
++			GetFilters((OPENFILENAMEW*)&open_file_name);
++		if (*filter_index > (long long)filters.size())
++		  NOTREACHED() << "Invalid filter index.";
++		else
++		  filter_selected = std::get<1>(filters[*filter_index - 1]);
++	  }
++
++	  // Get the extension that was suggested to the user (when the Save As dialog
++	  // was opened).
++	  std::wstring suggested_ext = GetExtensionWithoutLeadingDot(default_path.Extension());
++      LOG(ERROR) << suggested_ext;
++	  LOG(ERROR) << filter_selected;
++	  // If we can't get the extension from the default_path, we use the default
++	  // extension passed in. This is to cover cases like when saving a web page,
++	  // where we get passed in a name without an extension and a default extension
++	  // along with it.
++	  if (suggested_ext.empty())
++		suggested_ext.append(def_ext);
++
++	  *path = base::FilePath(
++		  AppendExtensionIfNeeded(base::FilePath(open_file_name.lpstrFile).value(), std::wstring(filter_selected.begin(), filter_selected.end()), suggested_ext));
++		  
++	if(open_file_name.lpstrFilter) {
++		::HeapFree(::GetProcessHeap(), 0, (LPVOID)open_file_name.lpstrFilter);
++		open_file_name.lpstrFilter = nullptr;
++	}
++	return true;
+   }
+-
+-  *path = base::FilePath(display_name.get());
+-  return true;
+ }
+ 
+ // Runs an Open file dialog box, with similar semantics for input parameters as
+@@ -246,10 +564,12 @@ bool RunOpenFileDialog(HWND owner,
+                        int* filter_index,
+                        std::vector<base::FilePath>* paths) {
+   Microsoft::WRL::ComPtr<IFileOpenDialog> file_open_dialog;
++  bool use_legacy_dialogs = false;
++  OPENFILENAME_NT4W open_file_name = {0};
+   if (FAILED(::CoCreateInstance(CLSID_FileOpenDialog, nullptr,
+                                 CLSCTX_INPROC_SERVER,
+                                 IID_PPV_ARGS(&file_open_dialog)))) {
+-    return false;
++    use_legacy_dialogs = true;
+   }
+ 
+   // The FOS_FORCEFILESYSTEM option ensures that if the user enters a URL in the
+@@ -258,63 +578,124 @@ bool RunOpenFileDialog(HWND owner,
+   // GetOpenFileName API.
+   dialog_options |= FOS_FORCEFILESYSTEM;
+ 
+-  if (!ConfigureDialog(file_open_dialog.Get(), title, ok_button_label,
+-                       default_path, filter, *filter_index, dialog_options)) {
+-    return false;
+-  }
+-
+-  // This handler auto-closes the file dialog if its owner window is closed.
+-  auto auto_close_dialog_event_handler =
+-      std::make_unique<ScopedAutoCloseDialogEventHandler>(
+-          owner, file_open_dialog.Get());
+-
+-  // Never consider the current scope as hung. The hang watching deadline (if
+-  // any) is not valid since the user can take unbounded time to choose the
+-  // file.
+-  base::HangWatcher::InvalidateActiveExpectations();
+-
+-  HRESULT hr = file_open_dialog->Show(owner);
+-  BaseShellDialogImpl::DisableOwner(owner);
+-
+-  // Remove the event handler regardless of the return value of Show().
+-  auto_close_dialog_event_handler = nullptr;
+-
+-  if (FAILED(hr))
+-    return false;
+-
+-  UINT file_type_index;
+-  if (FAILED(file_open_dialog->GetFileTypeIndex(&file_type_index)))
+-    return false;
+-
+-  *filter_index = static_cast<int>(file_type_index);
+-
+-  Microsoft::WRL::ComPtr<IShellItemArray> selected_items;
+-  if (FAILED(file_open_dialog->GetResults(&selected_items)))
+-    return false;
+-
+-  DWORD result_count;
+-  if (FAILED(selected_items->GetCount(&result_count)))
+-    return false;
+-
+-  DCHECK(result_count == 1 || (dialog_options & FOS_ALLOWMULTISELECT));
+-
+-  std::vector<base::FilePath> result(result_count);
+-  for (DWORD i = 0; i < result_count; ++i) {
+-    Microsoft::WRL::ComPtr<IShellItem> shell_item;
+-    if (FAILED(selected_items->GetItemAt(i, &shell_item)))
+-      return false;
+-
+-    base::win::ScopedCoMem<wchar_t> display_name;
+-    if (FAILED(shell_item->GetDisplayName(SIGDN_FILESYSPATH, &display_name))) {
+-      return false;
+-    }
+-
+-    result[i] = base::FilePath(display_name.get());
+-  }
+-
+-  // Only modify the out parameter if the enumeration didn't fail.
+-  *paths = std::move(result);
+-  return !paths->empty();
++  if(!use_legacy_dialogs) {
++	  if (!ConfigureDialog(file_open_dialog.Get(), title, ok_button_label,
++						   default_path, filter, *filter_index, dialog_options)) {
++		return false;
++	  }
++  } else {
++	  if (dialog_options & FOS_PICKFOLDERS)
++		  return ExecuteFolder_Legacy(owner, title, default_path, paths);
++	  ConfigureDialog_Legacy(&open_file_name, title, default_path, filter, dialog_options);
++   }
++
++  if (!use_legacy_dialogs) {
++          // This handler auto-closes the file dialog if its owner window is
++          // closed.
++      auto auto_close_dialog_event_handler =
++              std::make_unique<ScopedAutoCloseDialogEventHandler>(
++                  owner, file_open_dialog.Get());
++  
++	  // Never consider the current scope as hung. The hang watching deadline (if
++	  // any) is not valid since the user can take unbounded time to choose the
++	  // file.
++	  base::HangWatcher::InvalidateActiveExpectations();
++
++	  HRESULT hr = file_open_dialog->Show(owner);
++	  BaseShellDialogImpl::DisableOwner(owner);
++
++	  // Remove the event handler regardless of the return value of Show().
++	  auto_close_dialog_event_handler = nullptr;
++
++	  if (FAILED(hr))
++		return false;
++
++	  UINT file_type_index;
++	  if (FAILED(file_open_dialog->GetFileTypeIndex(&file_type_index)))
++		return false;
++
++	  *filter_index = static_cast<int>(file_type_index);
++
++	  Microsoft::WRL::ComPtr<IShellItemArray> selected_items;
++	  if (FAILED(file_open_dialog->GetResults(&selected_items)))
++		return false;
++
++	  DWORD result_count;
++	  if (FAILED(selected_items->GetCount(&result_count)))
++		return false;
++
++	  DCHECK(result_count == 1 || (dialog_options & FOS_ALLOWMULTISELECT));
++
++	  std::vector<base::FilePath> result(result_count);
++	  for (DWORD i = 0; i < result_count; ++i) {
++		Microsoft::WRL::ComPtr<IShellItem> shell_item;
++		if (FAILED(selected_items->GetItemAt(i, &shell_item)))
++		  return false;
++
++		base::win::ScopedCoMem<wchar_t> display_name;
++		if (FAILED(shell_item->GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING,
++											  &display_name))) {
++		  return false;
++		}
++
++		result[i] = base::FilePath(display_name.get());
++	  }
++
++	  // Only modify the out parameter if the enumeration didn't fail.
++	  *paths = std::move(result);
++	  return !paths->empty();
++  } else {
++	  base::HangWatcher::InvalidateActiveExpectations();
++	  wchar_t filename_buffer [UNICODE_STRING_MAX_CHARS];
++	  filename_buffer[0] = '\0';
++	  open_file_name.hwndOwner = owner;
++	  open_file_name.lpstrFile = filename_buffer;
++	  open_file_name.nMaxFile = UNICODE_STRING_MAX_CHARS;
++	  open_file_name.Flags |= OFN_EXPLORER | OFN_HIDEREADONLY;
++	  bool success = ::GetOpenFileNameW((OPENFILENAMEW*)&open_file_name);
++	  BaseShellDialogImpl::DisableOwner(owner);
++	  
++	  if(open_file_name.lpstrFilter) {
++		  ::HeapFree(::GetProcessHeap(), 0, (LPVOID)open_file_name.lpstrFilter);
++		  open_file_name.lpstrFilter = nullptr;
++	  }
++	  
++	  if(success) {
++		  base::FilePath directory;
++          std::vector<base::FilePath> filenames;
++		  const wchar_t* selection = open_file_name.lpstrFile;
++		  // The return value of |open_file_name.lpstrFile| is dependent on the
++		  // value of the Multi-Select flag within |open_file_name|. If the flag is
++		  // not set the return value will be a single null-terminated wide string.
++		  // If it is set it will be more than one null-terminated wide string, itself
++		  // terminated by an empty null-terminated wide string.
++		  if (open_file_name.Flags & OFN_ALLOWMULTISELECT) {
++			while (*selection) {  // Empty string indicates end of list.
++			  filenames.push_back(base::FilePath(selection));
++			  // Skip over filename and null-terminator.
++			  selection += filenames.back().value().length() + 1;
++			}
++		  } else {
++			filenames.push_back(base::FilePath(selection));
++		  }
++		  if (filenames.size() == 1) {
++			// When there is one file, it contains the path and filename.
++			directory = filenames.at(0).DirName();
++			filenames.at(0) = filenames.at(0).BaseName();
++		  } else if (filenames.size() > 1) {
++			// Otherwise, the first string is the path, and the remainder are
++			// filenames.
++			directory = filenames.at(0);
++			filenames.erase(filenames.begin());
++		  }
++		 for (std::vector<base::FilePath>::iterator it = filenames.begin();
++			   it != filenames.end(); ++it) {
++			paths->push_back(directory.Append(*it));
++		  }
++	  }
++
++	   return !paths->empty();
++   }
+ }
+ 
+ // Runs a Folder selection dialog box, passes back the selected folder in |path|
+diff --git a/ui/snapshot/snapshot_win.cc b/ui/snapshot/snapshot_win.cc
+index fc86bd5e38e0e..746023fcb9922 100644
+--- a/ui/snapshot/snapshot_win.cc
++++ b/ui/snapshot/snapshot_win.cc
+@@ -21,6 +21,11 @@
+ #include "ui/gfx/geometry/transform.h"
+ #include "ui/gfx/image/image.h"
+ 
++#ifdef UNSAFE_BUFFERS_BUILD
++// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
++#pragma allow_unsafe_buffers
++#endif
++
+ namespace ui {
+ 
+ namespace {
+@@ -29,6 +34,7 @@ void GrabHwndSnapshot(HWND window_handle,
+                       const gfx::Rect& snapshot_bounds_in_pixels,
+                       const gfx::Rect& clip_rect_in_pixels,
+                       gfx::Image* image) {
++  BOOL result = false;
+   gfx::Rect snapshot_bounds_in_window =
+       snapshot_bounds_in_pixels + clip_rect_in_pixels.OffsetFromOrigin();
+   gfx::Size bitmap_size(snapshot_bounds_in_window.right(),
+@@ -44,7 +50,31 @@ void GrabHwndSnapshot(HWND window_handle,
+   // the window that are drawn using DirectComposition.
+   UINT flags = PW_CLIENTONLY | PW_RENDERFULLCONTENT;
+ 
+-  BOOL result = PrintWindow(window_handle, mem_hdc, flags);
++  if (base::win::GetVersion() >= base::win::Version::WIN8_1){
++	result = PrintWindow(window_handle, mem_hdc, flags);
++  }
++  else {
++	// PrintWindow does not work for pre-Windows 8.1. So we'll use BitBlt.
++	// Copying from the window's actual HDC doesn't work so let's just use the full screen HDC.
++	// When a snapshot is captured the focus should be on the browser window anyway.
++	HDC window_hdc = GetDC(NULL);
++	
++	RECT window_rect;
++	
++	memset(&window_rect, 0, sizeof(RECT));
++	
++	result = GetWindowRect(window_handle, &window_rect);
++	
++	 if (!result) {
++    PLOG(ERROR) << "Failed to get valid rect for snapshot area.";
++    return;
++    }
++	// The left of the snapshot "window" rect is offset by 8 pixels to remove a bit of the dark grey showing through.
++	result = BitBlt(mem_hdc, 0, 0, bitmap_size.width(), bitmap_size.height(), 
++					window_hdc, window_rect.left + 8, window_rect.top, SRCCOPY);
++	
++	DeleteDC(window_hdc);
++  }
+   if (!result) {
+     PLOG(ERROR) << "Failed to print window";
+     return;
+diff --git a/ui/strings/ui_strings.grd b/ui/strings/ui_strings.grd
+index d8b16cd0828b8..5b17f57183812 100644
+--- a/ui/strings/ui_strings.grd
++++ b/ui/strings/ui_strings.grd
+@@ -32,7 +32,7 @@ need to be translated for each locale.-->
+     <output filename="ui_strings_de.pak" type="data_package" lang="de" />
+     <output filename="ui_strings_el.pak" type="data_package" lang="el" />
+     <output filename="ui_strings_en-GB.pak" type="data_package" lang="en-GB" />
+-    <output filename="ui_strings_en-US.pak" type="data_package" lang="en" />
++    <output filename="ui_strings_en-US.pak" type="data_package" lang="en-GB" />
+     <output filename="ui_strings_es.pak" type="data_package" lang="es" />
+     <if expr="is_ios">
+       <!-- iOS uses es-MX for es-419 -->
+diff --git a/ui/views/controls/menu/menu_config.cc b/ui/views/controls/menu/menu_config.cc
+index a711c503287a7..e93be78a846d8 100644
+--- a/ui/views/controls/menu/menu_config.cc
++++ b/ui/views/controls/menu/menu_config.cc
+@@ -83,7 +83,7 @@ bool MenuConfig::ShouldUseBubbleBorderForMenu(
+ 
+ void MenuConfig::InitCommon() {
+   context_menu_font_list = font_list = TypographyProvider::Get().GetFont(
+-      style::CONTEXT_MENU, style::STYLE_BODY_3);
++      style::CONTEXT_MENU, style::STYLE_BODY_3_EMPHASIS);
+   reserve_dedicated_arrow_column = false;
+   menu_horizontal_border_size = 0;
+   submenu_horizontal_overlap = 0;
+diff --git a/ui/views/controls/menu/menu_config_win.cc b/ui/views/controls/menu/menu_config_win.cc
+index a2dae078ccbd3..e13fc4747dbae 100644
+--- a/ui/views/controls/menu/menu_config_win.cc
++++ b/ui/views/controls/menu/menu_config_win.cc
+@@ -2,6 +2,7 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include "base/command_line.h"
+ #include "ui/views/controls/menu/menu_config.h"
+ 
+ #include <windows.h>  // Must come before other Windows system headers.
+@@ -25,6 +26,18 @@ void MenuConfig::InitPlatform() {
+   separator_upper_height = 5;
+   separator_lower_height = 7;
+ 
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("compact-ui")) {
++      menu_horizontal_border_size = 3;
++      nonrounded_menu_vertical_border_size = 3;
++      item_vertical_margin = 3;
++      item_horizontal_border_padding = -2;
++      icons_in_label = 10;
++      separator_height = 7;
++      separator_upper_height = 5;
++      separator_upper_height = 5;
++      corner_radius = 0;
++  }
++
+   use_bubble_border = corner_radius > 0;
+ }
+ 
+diff --git a/ui/views/layout/layout_provider.cc b/ui/views/layout/layout_provider.cc
+index d243aa338748a..43a34addd0cfd 100644
+--- a/ui/views/layout/layout_provider.cc
++++ b/ui/views/layout/layout_provider.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <algorithm>
+ 
++#include "base/command_line.h"
+ #include "base/containers/fixed_flat_map.h"
+ #include "base/logging.h"
+ #include "ui/base/ui_base_features.h"
+@@ -229,6 +230,8 @@ int LayoutProvider::GetCornerRadiusMetric(ShapeContextTokens id,
+   ShapeSysTokens token = GetShapeSysToken(id);
+   DCHECK_NE(token, ShapeSysTokens::kDefault)
+       << "kDefault token means there is a missing mapping between shape tokens";
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("classic-omnibox"))
++    return 0;
+   switch (token) {
+     case ShapeSysTokens::kXSmall:
+       return 4;

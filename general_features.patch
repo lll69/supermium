@@ -1,0 +1,1527 @@
+diff --git a/cc/debug/layer_tree_debug_state.cc b/cc/debug/layer_tree_debug_state.cc
+index 58b64ef83d9dd..3066caa0377ad 100644
+--- a/cc/debug/layer_tree_debug_state.cc
++++ b/cc/debug/layer_tree_debug_state.cc
+@@ -23,7 +23,7 @@ bool LayerTreeDebugState::RecordRenderingStats() const {
+ }
+ 
+ bool LayerTreeDebugState::ShouldCreateHudLayer() const {
+-  return ShowDebugRects() || ShouldDrawHudInfo();
++  return ShowDebugRects() || ShouldDrawHudInfo() || block_lazy_compositing;
+ }
+ 
+ bool LayerTreeDebugState::ShowDebugRects() const {
+diff --git a/cc/debug/layer_tree_debug_state.h b/cc/debug/layer_tree_debug_state.h
+index 8af352fc24d66..0691321d759e1 100644
+--- a/cc/debug/layer_tree_debug_state.h
++++ b/cc/debug/layer_tree_debug_state.h
+@@ -25,6 +25,8 @@ class CC_DEBUG_EXPORT LayerTreeDebugState {
+   LayerTreeDebugState(const LayerTreeDebugState& other);
+   ~LayerTreeDebugState();
+ 
++  bool block_lazy_compositing = true;
++
+   bool debugger_paused = false;
+   bool show_fps_counter = false;
+   DebugBorderTypes show_debug_borders = false;
+diff --git a/chrome/browser/browsing_data/chrome_browsing_data_lifetime_manager.cc b/chrome/browser/browsing_data/chrome_browsing_data_lifetime_manager.cc
+index d548f5037d659..b98e992448776 100644
+--- a/chrome/browser/browsing_data/chrome_browsing_data_lifetime_manager.cc
++++ b/chrome/browser/browsing_data/chrome_browsing_data_lifetime_manager.cc
+@@ -147,6 +147,30 @@ class BrowsingDataRemoverObserver
+ #endif
+ };
+ 
++uint64_t AllOriginTypeMask() {
++  return content::BrowsingDataRemover::ORIGIN_TYPE_PROTECTED_WEB |
++         content::BrowsingDataRemover::ORIGIN_TYPE_UNPROTECTED_WEB;
++}
++
++uint64_t AllRemoveMask() {
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("never-remove-cookies")) {
++      return content::BrowsingDataRemover::DATA_TYPE_CACHE |
++             content::BrowsingDataRemover::DATA_TYPE_DOWNLOADS |
++             chrome_browsing_data_remover::DATA_TYPE_CONTENT_SETTINGS |
++             chrome_browsing_data_remover::DATA_TYPE_FORM_DATA |
++             chrome_browsing_data_remover::DATA_TYPE_HISTORY |
++             chrome_browsing_data_remover::DATA_TYPE_PASSWORDS;
++  } else {
++      return content::BrowsingDataRemover::DATA_TYPE_CACHE |
++             content::BrowsingDataRemover::DATA_TYPE_DOWNLOADS |
++             chrome_browsing_data_remover::DATA_TYPE_CONTENT_SETTINGS |
++             chrome_browsing_data_remover::DATA_TYPE_FORM_DATA |
++             chrome_browsing_data_remover::DATA_TYPE_HISTORY |
++             chrome_browsing_data_remover::DATA_TYPE_PASSWORDS |
++             chrome_browsing_data_remover::DATA_TYPE_SITE_DATA;
++  }
++}
++
+ uint64_t GetOriginTypeMask(const base::ListValue& data_types) {
+   uint64_t result = 0;
+   for (const auto& data_type : data_types) {
+@@ -185,7 +209,8 @@ uint64_t GetRemoveMask(const base::ListValue& data_types) {
+         result |= content::BrowsingDataRemover::DATA_TYPE_DOWNLOADS;
+         break;
+       case browsing_data::PolicyDataType::kCookiesAndOtherSiteData:
+-        result |= chrome_browsing_data_remover::DATA_TYPE_SITE_DATA;
++        if (!base::CommandLine::ForCurrentProcess()->HasSwitch("never-remove-cookies"))
++            result |= chrome_browsing_data_remover::DATA_TYPE_SITE_DATA;
+         break;
+       case browsing_data::PolicyDataType::kCachedImagesAndFiles:
+         result |= content::BrowsingDataRemover::DATA_TYPE_CACHE;
+@@ -200,7 +225,8 @@ uint64_t GetRemoveMask(const base::ListValue& data_types) {
+         result |= chrome_browsing_data_remover::DATA_TYPE_CONTENT_SETTINGS;
+         break;
+       case browsing_data::PolicyDataType::kHostedAppData:
+-        result |= chrome_browsing_data_remover::DATA_TYPE_SITE_DATA;
++        if (!base::CommandLine::ForCurrentProcess()->HasSwitch("never-remove-cookies"))
++            result |= chrome_browsing_data_remover::DATA_TYPE_SITE_DATA;
+         break;
+       case browsing_data::PolicyDataType::kNumTypes:
+         NOTREACHED();
+@@ -328,9 +354,10 @@ void ChromeBrowsingDataLifetimeManager::ClearBrowsingDataForOnExitPolicy(
+   const base::ListValue& data_types = profile_->GetPrefs()->GetList(
+       browsing_data::prefs::kClearBrowsingDataOnExitList);
+ 
+-  if (!data_types.empty() &&
++   bool cdoe = base::CommandLine::ForCurrentProcess()->HasSwitch("clear-data-on-exit");
++   if (cdoe || (!data_types.empty() &&
+       IsConditionSatisfiedForBrowsingDataRemoval(GetSyncTypesForPolicyPref(
+-          profile_, browsing_data::prefs::kClearBrowsingDataOnExitList))) {
++          profile_, browsing_data::prefs::kClearBrowsingDataOnExitList)))) {
+     profile_->GetPrefs()->SetBoolean(
+         browsing_data::prefs::kClearBrowsingDataOnExitDeletionPending, true);
+     auto* remover = profile_->GetBrowsingDataRemover();
+@@ -341,8 +368,8 @@ void ChromeBrowsingDataLifetimeManager::ClearBrowsingDataForOnExitPolicy(
+       DCHECK(keep_browser_alive);
+ #endif
+     remover->RemoveAndReply(base::Time(), base::Time::Max(),
+-                            GetRemoveMask(data_types),
+-                            GetOriginTypeMask(data_types),
++                            cdoe ? AllRemoveMask() : GetRemoveMask(data_types),
++                            cdoe ? AllOriginTypeMask() : GetOriginTypeMask(data_types),
+                             BrowsingDataRemoverObserver::Create(
+                                 remover, /*filterable_deletion=*/true, profile_,
+                                 keep_browser_alive));
+diff --git a/chrome/browser/chrome_browser_main.cc b/chrome/browser/chrome_browser_main.cc
+index 057be98e715c6..91beab31edfc5 100644
+--- a/chrome/browser/chrome_browser_main.cc
++++ b/chrome/browser/chrome_browser_main.cc
+@@ -29,6 +29,7 @@
+ #include "base/values.h"
+ #include "build/branding_buildflags.h"
+ #include "build/build_config.h"
++#include "chrome/browser/about_flags.h"
+ #include "chrome/browser/active_use_util.h"
+ #include "chrome/browser/after_startup_task_utils.h"
+ #include "chrome/browser/browser_features.h"
+@@ -124,6 +125,7 @@
+ #include "components/variations/service/variations_service.h"
+ #include "components/variations/synthetic_trials_active_group_id_provider.h"
+ #include "components/variations/variations_ids_provider.h"
++#include "components/webui/flags/pref_service_flags_storage.h"
+ #include "content/public/browser/browser_thread.h"
+ #include "content/public/browser/network_service_instance.h"
+ #include "content/public/browser/network_service_util.h"
+@@ -2048,6 +2050,15 @@ int ChromeBrowserMainParts::PreMainMessageLoopRunImpl() {
+   }
+ #endif
+ 
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
++            "apply-ungoogled-supermium")) {
++        flags_ui::PrefServiceFlagsStorage flags_storage(g_browser_process->local_state());
++        about_flags::SetFeatureEntryEnabled(&flags_storage, "ungoogled-supermium",
++                                            /*enable=*/true);
++    flags_storage.CommitPendingWrites();		
++    return CHROME_RESULT_CODE_NORMAL_EXIT_UPGRADE_RELAUNCHED;
++  }
++
+   // This step is costly.
+   if (browser_creator_->Start(*base::CommandLine::ForCurrentProcess(),
+                               base::FilePath(), profile_info,
+diff --git a/chrome/browser/chrome_content_browser_client.cc b/chrome/browser/chrome_content_browser_client.cc
+index edab63d18ffd0..d822da0dedef9 100644
+--- a/chrome/browser/chrome_content_browser_client.cc
++++ b/chrome/browser/chrome_content_browser_client.cc
+@@ -859,11 +859,16 @@ bool HandleNewTabPageLocationOverride(
+ 
+   // Don't change the URL when incognito mode.
+   if (profile->IsOffTheRecord()) {
+-    return false;
++    if (!base::CommandLine::ForCurrentProcess()->HasSwitch("custom-ntp"))
++      return false;
+   }
+ 
+   std::string ntp_location =
+       profile->GetPrefs()->GetString(prefs::kNewTabPageLocationOverride);
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("custom-ntp"))
++    ntp_location = base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("custom-ntp");
++  if (profile->IsOffTheRecord() && ntp_location.find("chrome://") != std::string::npos) 
++    return false;
+   if (ntp_location.empty()) {
+     return false;
+   }
+diff --git a/chrome/browser/download/download_target_determiner.cc b/chrome/browser/download/download_target_determiner.cc
+index 988dc3cdfceeb..75fa65beb141d 100644
+--- a/chrome/browser/download/download_target_determiner.cc
++++ b/chrome/browser/download/download_target_determiner.cc
+@@ -53,6 +53,7 @@
+ #include "url/origin.h"
+ 
+ #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
++#include "extensions/browser/extension_util.h"
+ #include "extensions/browser/webstore_installer.h"
+ #include "extensions/common/feature_switch.h"
+ #endif
+@@ -1183,8 +1184,12 @@ DownloadConfirmationReason DownloadTargetDeterminer::NeedsConfirmation(
+ #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+   // Don't prompt for extension downloads if the installation site is allow
+   // listed.
+-  if (download_crx_util::IsTrustedExtensionDownload(GetProfile(), *download_))
+-    return DownloadConfirmationReason::NONE;
++if (!extensions::util::ShouldDownloadAsRegularFile()) {
++    // Don't prompt for extension downloads.
++    if (download_crx_util::IsTrustedExtensionDownload(GetProfile(), *download_) ||
++        filename.MatchesExtension(extensions::kExtensionFileExtension))
++      return DownloadConfirmationReason::NONE;
++  }
+ #endif
+ 
+   // Don't prompt for file types that are marked for opening automatically.
+diff --git a/chrome/browser/extensions/chrome_content_browser_client_extensions_part.cc b/chrome/browser/extensions/chrome_content_browser_client_extensions_part.cc
+index 6193fb96d3fda..3c4ee714bb244 100644
+--- a/chrome/browser/extensions/chrome_content_browser_client_extensions_part.cc
++++ b/chrome/browser/extensions/chrome_content_browser_client_extensions_part.cc
+@@ -445,6 +445,10 @@ bool ChromeContentBrowserClientExtensionsPart::CanCommitURL(
+   }
+ #endif  // BUILDFLAG(ENABLE_GUEST_VIEW)
+ 
++  if (process_host->GetProcess().is_current() &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch(::switches::kSingleProcess))
++       return true;
++
+   // Otherwise, the process is wrong for this extension URL.
+   return false;
+ }
+diff --git a/chrome/browser/extensions/extension_management.cc b/chrome/browser/extensions/extension_management.cc
+index 5b96804e4d91c..b608f54b39a94 100644
+--- a/chrome/browser/extensions/extension_management.cc
++++ b/chrome/browser/extensions/extension_management.cc
+@@ -334,6 +334,13 @@ bool ExtensionManagement::IsInstallationExplicitlyBlocked(
+ bool ExtensionManagement::IsOffstoreInstallAllowed(
+     const GURL& url,
+     const GURL& referrer_url) const {
++   const base::CommandLine& command_line =
++      *base::CommandLine::ForCurrentProcess();
++  if (command_line.HasSwitch("extension-mime-request-handling") &&
++      command_line.GetSwitchValueASCII("extension-mime-request-handling") ==
++      "always-prompt-for-install") {
++    return true;
++  }
+   // No allowed install sites specified, disallow by default.
+   if (!global_settings_->install_sources.has_value())
+     return false;
+diff --git a/chrome/browser/icon_loader_win.cc b/chrome/browser/icon_loader_win.cc
+index d1de4432bcd4d..4a12798f2aefb 100644
+--- a/chrome/browser/icon_loader_win.cc
++++ b/chrome/browser/icon_loader_win.cc
+@@ -8,6 +8,7 @@
+ 
+ #include <shellapi.h>
+ 
++#include "base/command_line.h"
+ #include "base/files/file.h"
+ #include "base/files/file_path.h"
+ #include "base/functional/bind.h"
+@@ -206,13 +207,17 @@ scoped_refptr<base::TaskRunner> IconLoader::GetReadIconTaskRunner() {
+ void IconLoader::ReadGroup() {
+   group_ = GroupForFilepath(file_path_);
+ 
+-  if (group_ == file_path_.value()) {
++  if (group_ == file_path_.value() &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch("force-generic-download-icons")) {
+     // Calls a Windows API that parses the file so must be sandboxed.
+     GetReadIconTaskRunner()->PostTask(
+         FROM_HERE,
+         base::BindOnce(&IconLoader::ReadIconInSandbox, base::Unretained(this)));
+   } else {
+-    // Looks up generic icons for groups based only on the file's extension.
++    // Looks up generic icons for groups based only on the file's extension, but still superior to the above option.
++    // in practice.
++	// Also, this is a preferable solution for some systems that end up loading hundreds of icon reader processes
++	// to the point of failure, hence the switch above.
+     GetReadIconTaskRunner()->PostTask(
+         FROM_HERE,
+         base::BindOnce(&IconLoader::ReadIcon, base::Unretained(this)));
+diff --git a/chrome/browser/sharing_hub/sharing_hub_features.cc b/chrome/browser/sharing_hub/sharing_hub_features.cc
+index 4ae3f73a0b9cd..3f83fa7e25f35 100644
+--- a/chrome/browser/sharing_hub/sharing_hub_features.cc
++++ b/chrome/browser/sharing_hub/sharing_hub_features.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/sharing_hub/sharing_hub_features.h"
+ 
++#include "base/command_line.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/common/pref_names.h"
+@@ -36,6 +37,8 @@ bool ScreenshotsDisabledByPolicy(content::BrowserContext* context) {
+ }  // namespace
+ 
+ bool SharingHubOmniboxEnabled(content::BrowserContext* context) {
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("disable-sharing-hub")) 
++     return false;
+ #if BUILDFLAG(IS_CHROMEOS)
+   return false;
+ #else
+@@ -66,7 +69,7 @@ bool HasPageAction(content::BrowserContext* context, bool is_popup_mode) {
+ #endif
+ }
+ 
+-BASE_FEATURE(kDesktopScreenshots, base::FEATURE_DISABLED_BY_DEFAULT);
++BASE_FEATURE(kDesktopScreenshots, base::FEATURE_ENABLED_BY_DEFAULT);
+ 
+ #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
+ void RegisterProfilePrefs(PrefRegistrySimple* registry) {
+diff --git a/chrome/browser/ssl/chrome_security_blocking_page_factory.cc b/chrome/browser/ssl/chrome_security_blocking_page_factory.cc
+index de9737c05a1e7..107020cf670aa 100644
+--- a/chrome/browser/ssl/chrome_security_blocking_page_factory.cc
++++ b/chrome/browser/ssl/chrome_security_blocking_page_factory.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/ssl/chrome_security_blocking_page_factory.h"
+ 
++#include "base/command_line.h"
+ #include "base/functional/bind.h"
+ #include "base/notreached.h"
+ #include "base/time/time.h"
+@@ -81,6 +82,8 @@ EnterpriseManaged g_is_enterprise_managed_for_testing =
+ // CaptivePortalBlockingPage to be invoked when the user has pressed the
+ // connect button.
+ void OpenLoginPage(content::WebContents* web_contents) {
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("disable-captive-portals"))
++     return;
+ #if !BUILDFLAG(ENABLE_CAPTIVE_PORTAL_DETECTION)
+   // OpenLoginTabForWebContents() is not available on Android (the only
+   // platform on which captive portal detection is not enabled). Simply open
+diff --git a/chrome/browser/ssl/ssl_config_service_manager.cc b/chrome/browser/ssl/ssl_config_service_manager.cc
+index be7fe08f34259..78be283352581 100644
+--- a/chrome/browser/ssl/ssl_config_service_manager.cc
++++ b/chrome/browser/ssl/ssl_config_service_manager.cc
+@@ -10,6 +10,7 @@
+ #include <string_view>
+ #include <vector>
+ 
++#include "base/command_line.h"
+ #include "base/containers/to_vector.h"
+ #include "base/feature_list.h"
+ #include "base/functional/bind.h"
+@@ -251,7 +252,8 @@ network::mojom::SSLConfigPtr SSLConfigServiceManager::GetNewSSLConfig() const {
+   config->client_cert_pooling_policy = CanonicalizeHostnamePatterns(
+       h2_client_cert_coalescing_host_patterns_.GetValue());
+ 
+-  config->ech_enabled = ech_enabled_.GetValue();
++  config->ech_enabled = ech_enabled_.GetValue() &&
++                        !base::CommandLine::ForCurrentProcess()->HasSwitch("disable-ech");
+ 
+ #if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+   config->trust_anchor_ids =
+diff --git a/chrome/browser/ui/layout_constants.cc b/chrome/browser/ui/layout_constants.cc
+index 9f6702af095c6..8314af2e3c79c 100644
+--- a/chrome/browser/ui/layout_constants.cc
++++ b/chrome/browser/ui/layout_constants.cc
+@@ -46,7 +46,11 @@ void SetLayoutConstantsFallback() {
+     // to the white space above and below.
+     layout_constant_values[(int)LayoutConstant::kBookmarkBarHeight] = layout_constant_values[(int)LayoutConstant::kBookmarkBarButtonHeight] 
+                                                                  + 6;
++    if (base::CommandLine::ForCurrentProcess()->HasSwitch("compact-ui"))
++       layout_constant_values[(int)LayoutConstant::kBookmarkBarHeight] = 30;
+     layout_constant_values[(int)LayoutConstant::kBookmarkBarButtonPadding] = touch_ui ? 0 : 4;
++    if (base::CommandLine::ForCurrentProcess()->HasSwitch("compact-ui"))
++       layout_constant_values[(int)LayoutConstant::kBookmarkBarHeight] = 0;
+     layout_constant_values[(int)LayoutConstant::kBookmarkBarButtonImageLabelPadding] = 6;
+     layout_constant_values[(int)LayoutConstant::kWebAppMenuButtonSize] = 24;
+       // We must limit the size of icons in the title bar to avoid vertically
+diff --git a/chrome/browser/ui/startup/infobar_utils.cc b/chrome/browser/ui/startup/infobar_utils.cc
+index 4907b9a951040..9d80d4d909a91 100644
+--- a/chrome/browser/ui/startup/infobar_utils.cc
++++ b/chrome/browser/ui/startup/infobar_utils.cc
+@@ -9,12 +9,14 @@
+ #include "base/rand_util.h"
+ #include "build/branding_buildflags.h"
+ #include "build/buildflag.h"
++#include "chrome/browser/about_flags.h"
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/browser/obsolete_system/obsolete_system.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/ui/browser.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/session_crashed_bubble.h"
++#include "chrome/browser/ui/simple_message_box.h"
+ #include "chrome/browser/ui/startup/automation_infobar_delegate.h"
+ #include "chrome/browser/ui/startup/bad_flags_prompt.h"
+ #include "chrome/browser/ui/startup/bidding_and_auction_consented_debugging_infobar_delegate.h"
+@@ -28,6 +30,8 @@
+ #include "chrome/common/pref_names.h"
+ #include "components/infobars/content/content_infobar_manager.h"
+ #include "components/prefs/pref_service.h"
++#include "components/webui/flags/flags_storage.h"
++#include "components/webui/flags/pref_service_flags_storage.h"
+ #include "content/public/common/content_switches.h"
+ #include "google_apis/google_api_keys.h"
+ 
+@@ -66,19 +70,19 @@ bool ShouldShowBadFlagsSecurityWarnings() {
+ #if !BUILDFLAG(IS_CHROMEOS)
+   PrefService* local_state = g_browser_process->local_state();
+   if (!local_state) {
+-    return true;
++    return false;
+   }
+ 
+   const auto* pref = local_state->FindPreference(
+       prefs::kCommandLineFlagSecurityWarningsEnabled);
+   DCHECK(pref);
+ 
+-  // The warnings can only be disabled by policy. Default to show warnings.
++  // The warnings can only be disabled by policy. Default to not showing warnings.
+   if (pref->IsManaged()) {
+     return pref->GetValue()->GetBool();
+   }
+ #endif
+-  return true;
++  return false;
+ }
+ 
+ // This is a separate function to avoid accidentally reading the switch from
+@@ -147,7 +151,8 @@ void AddInfoBarsIfNecessary(BrowserWindowInterface* browser,
+ 
+   // Web apps should not display the session restore bubble (crbug.com/40800614)
+   const bool should_display_bubble =
+-      !is_web_app && HasPendingUncleanExit(browser->GetProfile());
++      !is_web_app && HasPendingUncleanExit(browser->GetProfile())
++      && !startup_command_line.HasSwitch("hide-crashed-bubble");
+   base::UmaHistogramBoolean("Startup.CrashBubbleShown", should_display_bubble);
+   if (should_display_bubble) {
+     SessionCrashedBubble::ShowIfNotOffTheRecordProfile(
+@@ -182,6 +187,17 @@ void AddInfoBarsIfNecessary(BrowserWindowInterface* browser,
+     ShowBadFlagsPrompt(web_contents);
+   }
+ 
++  if (startup_command_line.HasSwitch("revert-from-portable")) {
++        chrome::MessageBoxResult mbr = chrome::ShowQuestionMessageBoxSync(nullptr, u"Profile Warning", u"--revert-from-portable is in use."
++                              u" If the profile has already been moved, press Yes. If not, press No. Security may suffer if the "
++                              u"profile's encryption remains bypassed.");
++
++        if (mbr == chrome::MESSAGE_BOX_RESULT_YES) {
++            std::unique_ptr<flags_ui::FlagsStorage> flags_storage = std::make_unique<flags_ui::PrefServiceFlagsStorage>(g_browser_process->local_state());
++            about_flags::SetFeatureEntryEnabled(flags_storage.get(), "revert-from-portable", false);
++        }
++  }
++
+   infobars::ContentInfoBarManager* infobar_manager =
+       infobars::ContentInfoBarManager::FromWebContents(web_contents);
+ 
+diff --git a/chrome/browser/ui/tabs/tab_strip_model.cc b/chrome/browser/ui/tabs/tab_strip_model.cc
+index 3326a79d2ba31..5e7d1463596d0 100644
+--- a/chrome/browser/ui/tabs/tab_strip_model.cc
++++ b/chrome/browser/ui/tabs/tab_strip_model.cc
+@@ -18,6 +18,7 @@
+ 
+ #include "base/check.h"
+ #include "base/check_op.h"
++#include "base/command_line.h"
+ #include "base/containers/adapters.h"
+ #include "base/containers/flat_map.h"
+ #include "base/containers/span.h"
+@@ -3675,6 +3676,10 @@ void TabStripModel::CloseTabs(base::span<content::WebContents* const> items,
+     return;
+   }
+ 
++  const std::string flag_value = base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("close-window-with-last-tab");
++  if (flag_value == "never" && !closing_all_ && static_cast<int>(filtered_items.size()) == count())
++    delegate()->AddTabAt(GURL(), -1, true);
++
+   const bool closing_all = static_cast<int>(filtered_items.size()) == count();
+   base::WeakPtr<TabStripModel> ref = weak_factory_.GetWeakPtr();
+   if (closing_all) {
+diff --git a/chrome/browser/ui/tabs/tab_strip_prefs.cc b/chrome/browser/ui/tabs/tab_strip_prefs.cc
+index b0d357c347745..d8eb166f44501 100644
+--- a/chrome/browser/ui/tabs/tab_strip_prefs.cc
++++ b/chrome/browser/ui/tabs/tab_strip_prefs.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/ui/tabs/tab_strip_prefs.h"
+ 
++#include "base/command_line.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/ui/actions/chrome_action_id.h"
+ #include "chrome/browser/ui/browser.h"
+@@ -29,11 +30,9 @@ namespace tabs {
+ 
+ bool GetDefaultTabSearchRightAligned() {
+   // These platforms are all left aligned, the others should be right.
+-#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+-  return false;
+-#else
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("tab-strip-control-button-left"))
++      return false;
+   return true;
+-#endif
+ }
+ 
+ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
+diff --git a/chrome/browser/ui/toolbar/chrome_labs/chrome_labs_utils.cc b/chrome/browser/ui/toolbar/chrome_labs/chrome_labs_utils.cc
+index 3c310d91b5591..0c903c31d58b0 100644
+--- a/chrome/browser/ui/toolbar/chrome_labs/chrome_labs_utils.cc
++++ b/chrome/browser/ui/toolbar/chrome_labs/chrome_labs_utils.cc
+@@ -7,6 +7,7 @@
+ #include <algorithm>
+ 
+ #include "base/base_switches.h"
++#include "base/command_line.h"
+ #include "base/metrics/field_trial_params.h"
+ #include "base/rand_util.h"
+ #include "chrome/browser/about_flags.h"
+@@ -139,6 +140,9 @@ bool AreNewChromeLabsExperimentsAvailable(Profile* profile) {
+ }
+ 
+ bool IsChromeLabsEnabled() {
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("disable-chrome-labs")) {
++    return false;
++  }
+   // Always early out on the stable channel regardless of other conditions.
+   if (chrome::GetChannel() == version_info::Channel::STABLE) {
+     return false;
+diff --git a/chrome/browser/ui/toolbar/toolbar_actions_model.cc b/chrome/browser/ui/toolbar/toolbar_actions_model.cc
+index 150788ee40826..1db2a1eae5830 100644
+--- a/chrome/browser/ui/toolbar/toolbar_actions_model.cc
++++ b/chrome/browser/ui/toolbar/toolbar_actions_model.cc
+@@ -9,6 +9,7 @@
+ #include <string>
+ #include <vector>
+ 
++#include "base/command_line.h"
+ #include "base/functional/bind.h"
+ #include "base/location.h"
+ #include "base/metrics/histogram_base.h"
+@@ -60,6 +61,9 @@ ToolbarActionsModel::ToolbarActionsModel(
+       FROM_HERE, base::BindOnce(&ToolbarActionsModel::OnReady,
+                                 weak_ptr_factory_.GetWeakPtr()));
+ 
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("classic-extension-view"))
++      extension_prefs_->SetPinnedExtensions(extension_prefs_->GetExtensions());
++
+   // We only care about watching toolbar-order prefs if not in incognito mode.
+   pref_change_registrar_.Init(prefs_);
+   pref_change_registrar_.Add(
+@@ -127,6 +131,8 @@ void ToolbarActionsModel::OnExtensionLoaded(
+   // hides the browser action and then disables and enables the extension.
+   if (!HasAction(extension->id()) && ShouldAddExtension(extension)) {
+     AddAction(extension->id());
++    if (base::CommandLine::ForCurrentProcess()->HasSwitch("classic-extension-view"))
++       extension_prefs_->SetPinnedExtensions(extension_prefs_->GetExtensions());
+   }
+ }
+ 
+@@ -594,6 +600,9 @@ void ToolbarActionsModel::SetActionVisibility(const ActionId& action_id,
+   DCHECK(!profile_->IsOffTheRecord())
+       << "Changing action pin state is disallowed in incognito.";
+ 
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("classic-extension-view"))
++      return;
++
+   auto stored_pinned_action_ids = extension_prefs_->GetPinnedExtensions();
+   DCHECK_NE(is_now_visible,
+             std::ranges::contains(stored_pinned_action_ids, action_id));
+diff --git a/chrome/browser/ui/translate/partial_translate_bubble_model_impl.cc b/chrome/browser/ui/translate/partial_translate_bubble_model_impl.cc
+index 9b0aa79f47a4d..4c6e4e4c38625 100644
+--- a/chrome/browser/ui/translate/partial_translate_bubble_model_impl.cc
++++ b/chrome/browser/ui/translate/partial_translate_bubble_model_impl.cc
+@@ -7,11 +7,17 @@
+ #include <string>
+ #include <utility>
+ 
++#include "base/command_line.h"
++#include "base/files/file_util.h"
++#include "base/logging.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "base/metrics/metrics_hashes.h"
++#include "base/path_service.h"
++#include "base/strings/utf_string_conversions.h"
+ #include "base/time/time.h"
+ #include "chrome/browser/translate/chrome_translate_client.h"
+ #include "chrome/browser/ui/translate/partial_translate_bubble_model.h"
++#include "chrome/common/chrome_paths.h"
+ #include "components/language_detection/core/constants.h"
+ #include "components/translate/content/browser/partial_translate_manager.h"
+ #include "components/translate/core/browser/translate_manager.h"
+@@ -250,6 +256,14 @@ void PartialTranslateBubbleModelImpl::OnPartialTranslateResponse(
+     SetSourceLanguage(response.source_language);
+     SetTargetLanguage(response.target_language);
+     SetTargetText(response.translated_text);
++    if (base::CommandLine::ForCurrentProcess()->HasSwitch("string-to-translate") &&
++        base::CommandLine::ForCurrentProcess()->HasSwitch("language-to-translate")) {
++      base::FilePath userdir;
++      if (base::PathService::Get(chrome::DIR_LOGS, &userdir)) {
++         const base::FilePath userpath = userdir.Append(FILE_PATH_LITERAL("translateresult"));
++         base::WriteFile(userpath, base::UTF16ToUTF8(response.translated_text));
++      }
++    }
+     SetViewState(PartialTranslateBubbleModel::VIEW_STATE_AFTER_TRANSLATE);
+     error_type_ = translate::TranslateErrors::NONE;
+     initial_request_completed_ = true;
+@@ -260,6 +274,11 @@ void PartialTranslateBubbleModelImpl::OnPartialTranslateResponse(
+   for (PartialTranslateBubbleModel::Observer& obs : observers_) {
+     obs.OnPartialTranslateComplete();
+   }
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("string-to-translate") &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch("language-to-translate")) {
++    base::Process process = base::Process(base::GetCurrentProcessHandle());
++    process.Terminate(0, true);
++  }
+ }
+ 
+ void PartialTranslateBubbleModelImpl::
+diff --git a/chrome/browser/ui/views/bookmarks/bookmark_bar_view.cc b/chrome/browser/ui/views/bookmarks/bookmark_bar_view.cc
+index 146d6dc191951..868e7e9708be1 100644
+--- a/chrome/browser/ui/views/bookmarks/bookmark_bar_view.cc
++++ b/chrome/browser/ui/views/bookmarks/bookmark_bar_view.cc
+@@ -18,6 +18,7 @@
+ 
+ #include "base/callback_list.h"
+ #include "base/check_op.h"
++#include "base/command_line.h"
+ #include "base/containers/to_vector.h"
+ #include "base/feature_list.h"
+ #include "base/functional/bind.h"
+@@ -854,7 +855,8 @@ void BookmarkBarView::Layout(PassKey) {
+                                    ? 0
+                                    : kSeparatorPadding;
+       saved_tab_groups_separator_view_->UpdateBorderAndPreferredSize(
+-          gfx::Insets::TLBR(0, left_padding, 0, kSeparatorPadding));
++          gfx::Insets::TLBR(0, left_padding, 0, 
++                            base::CommandLine::ForCurrentProcess()->HasSwitch("compact-ui") ? 0 : kSeparatorPadding));
+ 
+       // Update the bounds for the separator.
+       gfx::Size saved_tab_groups_separator_view_pref =
+@@ -1449,12 +1451,28 @@ void BookmarkBarView::OnButtonPressed(const bookmarks::BookmarkNode* node,
+   // are directed to ::OnMenuButtonPressed().
+   DCHECK(node->is_url());
+   RecordAppLaunch(browser_->profile(), node->url());
+-  bookmarks::OpenAllIfAllowed(
+-      browser_, {node}, ui::DispositionFromEventFlags(event.flags()),
+-      bookmarks::OpenAllBookmarksContext::kNone,
+-      page_load_metrics::NavigationHandleUserData::InitiatorLocation::
+-          kBookmarkBar,
+-      {{BookmarkLaunchLocation::kAttachedBar, base::TimeTicks::Now()}});
++  if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("open-bookmark-option") == "foreground") {
++    bookmarks::OpenAllIfAllowed(
++        browser_, {node}, WindowOpenDisposition::NEW_FOREGROUND_TAB,
++        bookmarks::OpenAllBookmarksContext::kNone,
++        page_load_metrics::NavigationHandleUserData::InitiatorLocation::
++            kBookmarkBar,
++        {{BookmarkLaunchLocation::kAttachedBar, base::TimeTicks::Now()}});
++  } else if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("open-bookmark-option") == "background")  {
++    bookmarks::OpenAllIfAllowed(
++        browser_, {node}, WindowOpenDisposition::NEW_BACKGROUND_TAB,
++        bookmarks::OpenAllBookmarksContext::kNone,
++        page_load_metrics::NavigationHandleUserData::InitiatorLocation::
++            kBookmarkBar,
++        {{BookmarkLaunchLocation::kAttachedBar, base::TimeTicks::Now()}});
++  } else {
++    bookmarks::OpenAllIfAllowed(
++        browser_, {node}, ui::DispositionFromEventFlags(event.flags()),
++        bookmarks::OpenAllBookmarksContext::kNone,
++        page_load_metrics::NavigationHandleUserData::InitiatorLocation::
++            kBookmarkBar,
++        {{BookmarkLaunchLocation::kAttachedBar, base::TimeTicks::Now()}});
++  }
+   RecordBookmarkLaunch(
+       BookmarkLaunchLocation::kAttachedBar,
+       profile_metrics::GetBrowserProfileType(browser_->profile()));
+diff --git a/chrome/browser/ui/views/extensions/extensions_toolbar_desktop.cc b/chrome/browser/ui/views/extensions/extensions_toolbar_desktop.cc
+index 7b772874717df..904f6d119b6d3 100644
+--- a/chrome/browser/ui/views/extensions/extensions_toolbar_desktop.cc
++++ b/chrome/browser/ui/views/extensions/extensions_toolbar_desktop.cc
+@@ -7,6 +7,7 @@
+ #include <algorithm>
+ #include <memory>
+ 
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "base/functional/bind.h"
+ #include "base/functional/callback_helpers.h"
+@@ -27,6 +28,7 @@
+ #include "chrome/browser/ui/side_panel/side_panel_ui.h"
+ #include "chrome/browser/ui/toolbar/toolbar_action_hover_card_types.h"
+ #include "chrome/browser/ui/toolbar/toolbar_action_view_model.h"
++#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+ #include "chrome/browser/ui/ui_features.h"
+ #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
+ #include "chrome/browser/ui/view_ids.h"
+@@ -463,7 +465,7 @@ void ExtensionsToolbarDesktop::AnchorAndShowWidgetImmediately(
+   // * AnchorAndShowWidgetImmediately runs.
+   // Revisit how to handle that, likely the Widget should Close on removal which
+   // would remove the AnchoredWidget entry.
+-  views::View* const anchor_view = GetViewForId(iter->extension_id);
++  views::View* anchor_view = GetViewForId(iter->extension_id);
+   widget->widget_delegate()->AsBubbleDialogDelegate()->SetAnchorView(
+       anchor_view && anchor_view->GetVisible() ? anchor_view
+                                                : GetExtensionsButton());
+@@ -949,6 +951,9 @@ void ExtensionsToolbarDesktop::UpdateContainerVisibility() {
+   bool was_visible = GetVisible();
+   SetVisible(ShouldContainerBeVisible());
+ 
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("classic-extension-view"))
++    extensions_button_->SetVisible(false);
++  
+   // Layout animation does not handle host view visibility changing; requires
+   // resetting.
+   if (was_visible != GetVisible()) {
+@@ -961,6 +966,8 @@ void ExtensionsToolbarDesktop::UpdateContainerVisibility() {
+ }
+ 
+ bool ExtensionsToolbarDesktop::ShouldContainerBeVisible() const {
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("hide-extensions-menu"))
++    return false;
+   // The container (and extensions-menu button) should not be visible if we have
+   // no extensions.
+   if (!toolbar_view_model_->HasAnyExtensions()) {
+diff --git a/chrome/browser/ui/views/frame/browser_root_view.cc b/chrome/browser/ui/views/frame/browser_root_view.cc
+index 47d7e467d9ddd..fd09b31348cfc 100644
+--- a/chrome/browser/ui/views/frame/browser_root_view.cc
++++ b/chrome/browser/ui/views/frame/browser_root_view.cc
+@@ -12,6 +12,7 @@
+ #include <vector>
+ 
+ #include "base/check_op.h"
++#include "base/command_line.h"
+ #include "base/containers/adapters.h"
+ #include "base/feature_list.h"
+ #include "base/functional/bind.h"
+@@ -497,9 +498,10 @@ void BrowserRootView::PaintChildren(const views::PaintInfo& paint_info) {
+   // to draw an outer stroke.
+   const float stroke_width = scale;
+   const float stroke_outset = stroke_width / 2;
+-  const float corner_radius =
+-      GetLayoutConstant(LayoutConstant::kToolbarCornerRadius) * scale +
+-      stroke_outset;
++  float corner_radius = 0.0f;
++  if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("supermium-tab-options") != "v60") {
++      corner_radius = GetLayoutConstant(LayoutConstant::kToolbarCornerRadius) * scale + stroke_outset;
++  }
+   flags.setStyle(cc::PaintFlags::kStroke_Style);
+   flags.setStrokeWidth(stroke_width);
+ 
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+index c5b196b2be317..3bacb333b963b 100644
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -749,6 +749,9 @@ class BrowserView::ExclusiveAccessContextImpl
+   void UpdateExclusiveAccessBubble(
+       const ExclusiveAccessBubbleParams& params,
+       ExclusiveAccessBubbleHideCallback first_hide_callback) override {
++    if (base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "hide-fullscreen-exit-ui"))
++      return;
+     // Trusted pinned mode does not allow to escape. So do not show the bubble.
+     bool is_trusted_pinned =
+         platform_util::IsBrowserLockedFullscreen(browser_view_->browser_.get());
+@@ -1767,6 +1770,13 @@ std::vector<StatusBubble*> BrowserView::GetStatusBubbles() {
+ }
+ 
+ void BrowserView::UpdateTitleBar() {
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("string-to-translate") &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch("language-to-translate")) {
++    CHECK_DEREF(TranslateBubbleController::From(browser_.get())).
++    StartPartialTranslate(base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("language-to-translate"), std::string("fr"),
++                          base::WideToUTF16(base::CommandLine::ForCurrentProcess()->GetSwitchValueNative("string-to-translate")));
++    return;
++  }
+   browser_widget_->UpdateWindowTitle();
+   if (web_app_window_title_) {
+     DCHECK(GetIsWebAppType());
+@@ -4873,7 +4883,8 @@ void BrowserView::AddedToWidget() {
+   // rather than Init() as it depends on the browser frame being ready.
+   // It also needs to be after the |toolbar_| had been initialized since it uses
+   // the omnibox.
+-  if (GetIsNormalType()) {
++  if (GetIsNormalType() &&
++      !base::CommandLine::ForCurrentProcess()->HasSwitch("remove-tabsearch-button")) {
+     DCHECK(browser_widget_);
+     DCHECK(toolbar_);
+     top_controls_slide_controller_ =
+diff --git a/chrome/browser/ui/views/fullscreen_control/fullscreen_control_host.cc b/chrome/browser/ui/views/fullscreen_control/fullscreen_control_host.cc
+index 459e43e06c311..a0065c782b086 100644
+--- a/chrome/browser/ui/views/fullscreen_control/fullscreen_control_host.cc
++++ b/chrome/browser/ui/views/fullscreen_control/fullscreen_control_host.cc
+@@ -72,6 +72,9 @@ constexpr base::TimeDelta kTouchPopupTimeout = base::Seconds(10);
+ constexpr base::TimeDelta kKeyPressPopupDelay = base::Seconds(1);
+ 
+ bool IsExitUiEnabled() {
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "hide-fullscreen-exit-ui"))
++         return false;
+ #if BUILDFLAG(IS_MAC)
+   // Exit UI is unnecessary, since Mac uses the OS fullscreen such that window
+   // menu and controls reveal when the cursor is moved to the top.
+diff --git a/chrome/browser/ui/views/location_bar/location_bar_view.cc b/chrome/browser/ui/views/location_bar/location_bar_view.cc
+index 24c769cf019fe..1ed67788be237 100644
+--- a/chrome/browser/ui/views/location_bar/location_bar_view.cc
++++ b/chrome/browser/ui/views/location_bar/location_bar_view.cc
+@@ -10,6 +10,7 @@
+ #include <string_view>
+ #include <utility>
+ 
++#include "base/command_line.h"
+ #include "base/containers/adapters.h"
+ #include "base/feature_list.h"
+ #include "base/functional/bind.h"
+@@ -299,6 +300,7 @@ void LocationBarView::Init() {
+   // to draw outside the parent's bounds.
+   SetPaintToLayer();
+   layer()->SetFillsBoundsOpaquely(false);
++  SetLayoutConstants();
+ 
+   if (base::FeatureList::IsEnabled(
+           content_settings::features::kLeftHandSideActivityIndicators)) {
+@@ -515,7 +517,9 @@ void LocationBarView::Init() {
+     if (!apps::features::ShouldShowLinkCapturingUX()) {
+       params.types_enabled.push_back(PageActionIconType::kIntentPicker);
+     }
+-    params.types_enabled.push_back(PageActionIconType::kPwaInstall);
++    if (!base::CommandLine::ForCurrentProcess()->HasSwitch("disable-pwa-install-prompt")) {
++      params.types_enabled.push_back(PageActionIconType::kPwaInstall);
++    }
+     params.types_enabled.push_back(PageActionIconType::kTranslate);
+     params.types_enabled.push_back(PageActionIconType::kZoom);
+ 
+@@ -622,6 +626,8 @@ bool LocationBarView::IsInitialized() const {
+ }
+ 
+ int LocationBarView::GetBorderRadius() const {
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("classic-omnibox"))
++     return 3;
+   return ComputeBorderRadius(size());
+ }
+ 
+@@ -1605,6 +1611,10 @@ void LocationBarView::RefreshBackground() {
+     border_color = color_provider->GetColor(kColorLocationBarBorderOnMismatch);
+   }
+ 
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("classic-omnibox-border") && !is_caret_visible) {
++      border_color = SK_ColorGRAY;
++  }
++
+   if (is_popup_mode_) {
+     SetBackground(views::CreateSolidBackground(background_color_));
+   } else {
+diff --git a/chrome/browser/ui/views/toolbar/toolbar_view.cc b/chrome/browser/ui/views/toolbar/toolbar_view.cc
+index 9f1ad065ba766..e37ae1a3b9527 100644
+--- a/chrome/browser/ui/views/toolbar/toolbar_view.cc
++++ b/chrome/browser/ui/views/toolbar/toolbar_view.cc
+@@ -603,6 +603,15 @@ void ToolbarView::Init() {
+                                  browser_->profile()->IsGuestSession() ||
+                                  browser_->profile()->IsRegularProfile();
+ #endif
++    const std::string sab_value = base::CommandLine::ForCurrentProcess()->
++                                  GetSwitchValueASCII("show-avatar-button");
++    if (sab_value == "always")
++      show_avatar_toolbar_button = true;
++    else if (sab_value == "incognito-and-guest")
++      show_avatar_toolbar_button = browser_->profile()->IsIncognitoProfile() ||
++                                    browser_->profile()->IsGuestSession();
++    else if (sab_value == "never")
++      show_avatar_toolbar_button = false;
+     avatar_->SetVisible(show_avatar_toolbar_button);
+   }
+ 
+@@ -1562,11 +1571,11 @@ void ToolbarView::InitLayout() {
+             .WithOrder(kToolbarActionsFlexOrder));
+   }
+ 
+-  if (toolbar_divider_) {
+-    toolbar_divider_->SetProperty(
+-        views::kMarginsKey,
+-        gfx::Insets::VH(
+-            0, GetLayoutConstant(LayoutConstant::kToolbarDividerSpacing)));
++  if (toolbar_divider_ && base::CommandLine::ForCurrentProcess()->HasSwitch("compact-ui")) {
++    toolbar_divider_->SetProperty(views::kMarginsKey, gfx::Insets::VH(0, 2));
++  } else if (toolbar_divider_)  {
++    toolbar_divider_->SetProperty(views::kMarginsKey,
++                      gfx::Insets::VH(0, GetLayoutConstant(LayoutConstant::kToolbarDividerSpacing)));
+   }
+ 
+   if (glic_button_ &&
+@@ -1653,7 +1662,11 @@ void ToolbarView::LayoutCommon() {
+     }
+   }
+ 
+-  layout_manager_->SetInteriorMargin(interior_margin);
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("compact-ui")) {
++    layout_manager_->SetInteriorMargin(gfx::Insets::VH(3, 0));
++  } else {
++    layout_manager_->SetInteriorMargin(interior_margin);
++  }
+ 
+   // Extend buttons to the window edge if we're either in a maximized or
+   // fullscreen window. This makes the buttons easier to hit, see Fitts' law.
+diff --git a/chrome/renderer/chrome_render_frame_observer.cc b/chrome/renderer/chrome_render_frame_observer.cc
+index 9e24f7dc00fc4..6ff0c3b5bd1dc 100644
+--- a/chrome/renderer/chrome_render_frame_observer.cc
++++ b/chrome/renderer/chrome_render_frame_observer.cc
+@@ -280,14 +280,16 @@ void ChromeRenderFrameObserver::DidFinishLoad() {
+   if (frame->Parent() || frame->IsInFencedFrameTree())
+     return;
+ 
+-  GURL osdd_url = frame->GetDocument().OpenSearchDescriptionURL();
+-  if (!osdd_url.is_empty()) {
+-    mojo::Remote<chrome::mojom::OpenSearchDescriptionDocumentHandler>
+-        osdd_handler;
+-    render_frame()->GetBrowserInterfaceBroker().GetInterface(
+-        osdd_handler.BindNewPipeAndPassReceiver());
+-    osdd_handler->PageHasOpenSearchDescriptionDocument(
+-        frame->GetDocument().Url(), osdd_url);
++  if (!base::CommandLine::ForCurrentProcess()->HasSwitch("disable-search-engine-collection")) {
++	  GURL osdd_url = frame->GetDocument().OpenSearchDescriptionURL();
++	  if (!osdd_url.is_empty()) {
++		mojo::Remote<chrome::mojom::OpenSearchDescriptionDocumentHandler>
++			osdd_handler;
++		render_frame()->GetBrowserInterfaceBroker().GetInterface(
++			osdd_handler.BindNewPipeAndPassReceiver());
++		osdd_handler->PageHasOpenSearchDescriptionDocument(
++			frame->GetDocument().Url(), osdd_url);
++	  }
+   }
+ }
+ 
+diff --git a/components/components_chromium_strings.grd b/components/components_chromium_strings.grd
+index 4864368f4a43e..9a14c9fc82630 100644
+--- a/components/components_chromium_strings.grd
++++ b/components/components_chromium_strings.grd
+@@ -22,7 +22,7 @@
+     <output filename="components_branded_strings_de.pak" type="data_package" lang="de" />
+     <output filename="components_branded_strings_el.pak" type="data_package" lang="el" />
+     <output filename="components_branded_strings_en-GB.pak" type="data_package" lang="en-GB" />
+-    <output filename="components_branded_strings_en-US.pak" type="data_package" lang="en" />
++    <output filename="components_branded_strings_en-US.pak" type="data_package" lang="en-GB" />
+     <output filename="components_branded_strings_es.pak" type="data_package" lang="es" />
+     <if expr="is_ios">
+       <!-- iOS uses es-MX for es-419 -->
+diff --git a/components/download/internal/common/base_file.cc b/components/download/internal/common/base_file.cc
+index fc570b5d32d35..b1647fc6374b3 100644
+--- a/components/download/internal/common/base_file.cc
++++ b/components/download/internal/common/base_file.cc
+@@ -7,6 +7,7 @@
+ #include <memory>
+ #include <utility>
+ 
++#include "base/command_line.h"
+ #include "base/compiler_specific.h"
+ #include "base/containers/heap_array.h"
+ #include "base/files/file.h"
+@@ -661,10 +662,14 @@ void BaseFile::AnnotateWithSourceInformation(
+         &BaseFile::OnQuarantineServiceError, weak_factory_.GetWeakPtr(),
+         authority_url, referrer_url));
+ 
+-    quarantine_service_->QuarantineFile(
+-        full_path_, authority_url, referrer_url, request_initiator, client_guid,
+-        base::BindOnce(&BaseFile::OnFileQuarantined,
+-                       weak_factory_.GetWeakPtr()));
++    if (base::CommandLine::ForCurrentProcess()->HasSwitch("disable-alternate-ds")){
++		OnFileQuarantined(quarantine::mojom::QuarantineFileResult::OK);
++	} else {
++		quarantine_service_->QuarantineFile(
++         full_path_, authority_url, referrer_url, request_initiator, client_guid,
++         base::BindOnce(&BaseFile::OnFileQuarantined,
++                        weak_factory_.GetWeakPtr()));
++	}
+   }
+ }
+ 
+diff --git a/components/history/core/browser/history_backend.cc b/components/history/core/browser/history_backend.cc
+index 0098d980cd83d..26e6841789c7e 100644
+--- a/components/history/core/browser/history_backend.cc
++++ b/components/history/core/browser/history_backend.cc
+@@ -14,6 +14,7 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "base/command_line.h"
+ #include "base/compiler_specific.h"
+ #include "base/containers/flat_set.h"
+ #include "base/feature_list.h"
+@@ -1375,7 +1376,8 @@ void HistoryBackend::InitImpl(
+   db_->GetStartDate(&first_recorded_time_);
+ 
+   // Start expiring old stuff.
+-  expirer_.StartExpiringOldStuff(base::Days(kExpireDaysThreshold));
++  if (!base::CommandLine::ForCurrentProcess()->HasSwitch("keep-old-history"))
++    expirer_.StartExpiringOldStuff(base::Days(kExpireDaysThreshold));
+ }
+ 
+ void HistoryBackend::CloseAllDatabases() {
+diff --git a/components/history/core/browser/url_database.cc b/components/history/core/browser/url_database.cc
+index e7af684350b25..30850b0bc0ed6 100644
+--- a/components/history/core/browser/url_database.cc
++++ b/components/history/core/browser/url_database.cc
+@@ -7,6 +7,7 @@
+ #include <string>
+ #include <vector>
+ 
++#include "base/command_line.h"
+ #include "base/i18n/case_conversion.h"
+ #include "base/logging.h"
+ #include "base/memory/ptr_util.h"
+@@ -356,6 +357,11 @@ bool URLDatabase::AutocompleteForPrefix(const std::string& prefix,
+ }
+ 
+ bool URLDatabase::IsTypedHost(const std::string& host, std::string* scheme) {
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("user-data-dir"))
++  {  // Some portable users have had issues initializing the browser starting here.
++     // Temporary change as a result.
++     return false;
++  }
+   const char* schemes[] = {
+     url::kHttpScheme,
+     url::kHttpsScheme,
+diff --git a/components/metrics/machine_id_provider_win.cc b/components/metrics/machine_id_provider_win.cc
+index 937cd3b1e4b84..f38cb3af07410 100644
+--- a/components/metrics/machine_id_provider_win.cc
++++ b/components/metrics/machine_id_provider_win.cc
+@@ -10,6 +10,7 @@
+ #include <winioctl.h>
+ 
+ #include "base/base_paths.h"
++#include "base/command_line.h"
+ #include "base/files/file_path.h"
+ #include "base/notreached.h"
+ #include "base/path_service.h"
+@@ -23,12 +24,18 @@ MachineIdProvider::MachineIdProvider() = default;
+ MachineIdProvider::~MachineIdProvider() = default;
+ 
+ bool MachineIdProvider::HasId() const {
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("disable-machine-id")) {
++    return false;
++  }
+   return true;
+ }
+ 
+ // On windows, the machine id is based on the serial number of the drive Chrome
+ // is running from.
+ std::string MachineIdProvider::GetMachineId() const {
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("disable-machine-id")) {
++    return std::string();
++  }
+   base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                 base::BlockingType::MAY_BLOCK);
+ 
+diff --git a/components/omnibox/browser/history_url_provider.cc b/components/omnibox/browser/history_url_provider.cc
+index 526c06fdfe1e6..703e31f9e3e03 100644
+--- a/components/omnibox/browser/history_url_provider.cc
++++ b/components/omnibox/browser/history_url_provider.cc
+@@ -487,6 +487,8 @@ void HistoryURLProvider::Start(const AutocompleteInput& input,
+   if (fixed_up_input.type() != metrics::OmniboxInputType::QUERY)
+     matches_.push_back(what_you_typed_match);
+ 
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("omnibox-autocomplete-filtering"))
++    return;
+   // We'll need the history service to run both passes, so try to obtain it.
+   history::HistoryService* const history_service =
+       client()->GetHistoryService();
+diff --git a/components/omnibox/browser/search_provider.cc b/components/omnibox/browser/search_provider.cc
+index 5b3320159f0f2..7bd029ec277f1 100644
+--- a/components/omnibox/browser/search_provider.cc
++++ b/components/omnibox/browser/search_provider.cc
+@@ -15,6 +15,7 @@
+ #include <vector>
+ 
+ #include "base/base64.h"
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "base/functional/bind.h"
+ #include "base/functional/callback.h"
+@@ -684,6 +685,8 @@ void SearchProvider::Run(bool query_is_private) {
+ void SearchProvider::DoHistoryQuery(bool minimal_changes) {
+   // The history query results are synchronous, so if minimal_changes is true,
+   // we still have the last results and don't need to do anything.
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("omnibox-autocomplete-filtering"))
++    return;
+   if (minimal_changes)
+     return;
+ 
+diff --git a/components/os_crypt/async/browser/dpapi_key_provider.cc b/components/os_crypt/async/browser/dpapi_key_provider.cc
+index 5ecbff3d8daf9..f48db7b578fe6 100644
+--- a/components/os_crypt/async/browser/dpapi_key_provider.cc
++++ b/components/os_crypt/async/browser/dpapi_key_provider.cc
+@@ -10,6 +10,7 @@
+ #include <wincrypt.h>
+ 
+ #include "base/base64.h"
++#include "base/command_line.h"
+ #include "base/compiler_specific.h"
+ #include "base/logging.h"
+ #include "base/metrics/histogram_functions.h"
+@@ -38,6 +39,10 @@ constexpr uint8_t kDPAPIKeyPrefix[] = {'D', 'P', 'A', 'P', 'I'};
+ 
+ std::optional<std::vector<uint8_t>> DecryptKeyWithDPAPI(
+     base::span<const uint8_t> ciphertext) {
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("disable-encryption")) {
++        return std::vector<uint8_t>(ciphertext.data(),
++                                    UNSAFE_TODO(ciphertext.data() + ciphertext.size()));
++  }
+   DATA_BLOB input = {};
+   input.pbData = const_cast<BYTE*>(ciphertext.data());
+   input.cbData = static_cast<DWORD>(ciphertext.size());
+diff --git a/components/os_crypt/async/browser/os_crypt_win.cc b/components/os_crypt/async/browser/os_crypt_win.cc
+index 59482db22dc11..5fc6f10ae686e 100644
+--- a/components/os_crypt/async/browser/os_crypt_win.cc
++++ b/components/os_crypt/async/browser/os_crypt_win.cc
+@@ -12,6 +12,7 @@
+ #include <vector>
+ 
+ #include "base/base64.h"
++#include "base/command_line.h"
+ #include "base/logging.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "base/strings/strcat.h"
+@@ -39,6 +40,10 @@ constexpr char kDPAPIKeyPrefix[] = "DPAPI";
+ 
+ bool EncryptStringWithDPAPI(const std::string& plaintext,
+                             std::string* ciphertext) {
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("disable-encryption")){
++    *ciphertext = plaintext;
++    return true;
++  }
+   DATA_BLOB input;
+   input.pbData =
+       const_cast<BYTE*>(reinterpret_cast<const BYTE*>(plaintext.data()));
+@@ -73,6 +78,10 @@ bool EncryptStringWithDPAPI(const std::string& plaintext,
+ 
+ bool DecryptStringWithDPAPI(const std::string& ciphertext,
+                             std::string* plaintext) {
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("disable-encryption")){
++    *plaintext = ciphertext;
++    return true;
++  }
+   DATA_BLOB input;
+   input.pbData =
+       const_cast<BYTE*>(reinterpret_cast<const BYTE*>(ciphertext.data()));
+@@ -107,6 +116,9 @@ bool EncryptAndStoreKey(const std::string& key, PrefService* local_state) {
+ }  // namespace
+ 
+ bool Init(PrefService* local_state) {
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("disable-encryption")) {
++    return true;
++  }
+   switch (InitWithExistingKey(local_state)) {
+     case InitResult::kSuccess:
+       return true;
+diff --git a/components/page_image_service/image_service_consent_helper.cc b/components/page_image_service/image_service_consent_helper.cc
+index 4929e0506036d..5ac9383414fb5 100644
+--- a/components/page_image_service/image_service_consent_helper.cc
++++ b/components/page_image_service/image_service_consent_helper.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "components/page_image_service/image_service_consent_helper.h"
+ 
++#include "base/command_line.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "components/page_image_service/metrics_util.h"
+ #include "components/sync/service/sync_service.h"
+@@ -31,7 +32,7 @@ ImageServiceConsentHelper::ImageServiceConsentHelper(
+       data_type_(data_type),
+       timeout_duration_(base::Seconds(10)) {
+   // `sync_service` can be null, for example when disabled via flags.
+-  if (sync_service) {
++  if (!base::CommandLine::ForCurrentProcess()->HasSwitch("disable-sync") && sync_service) {
+     sync_service_observer_.Observe(sync_service);
+   }
+ }
+diff --git a/components/pdf/renderer/internal_plugin_renderer_helpers.cc b/components/pdf/renderer/internal_plugin_renderer_helpers.cc
+index 0c207bfaa23fc..174309b0ad883 100644
+--- a/components/pdf/renderer/internal_plugin_renderer_helpers.cc
++++ b/components/pdf/renderer/internal_plugin_renderer_helpers.cc
+@@ -29,7 +29,8 @@ namespace pdf {
+ 
+ bool IsPdfRenderer() {
+   static const bool has_switch =
+-      base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kPdfRenderer);
++      base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kPdfRenderer) ||
++      base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kSingleProcess);
+   return has_switch;
+ }
+ 
+diff --git a/components/url_formatter/url_fixer.cc b/components/url_formatter/url_fixer.cc
+index 020fef557948d..0f2a436bbf12c 100644
+--- a/components/url_formatter/url_fixer.cc
++++ b/components/url_formatter/url_fixer.cc
+@@ -639,7 +639,10 @@ GURL FixupURLInternal(const std::string& text,
+       FixupHost(trimmed.substr(parts.host.begin, parts.host.len),
+                  desired_tld, &url);
+     }
+-    if (chrome_url && !parts.host.is_valid()) {
++    if (chrome_url && !parts.host.is_valid() &&
++        (!base::CommandLine::ForCurrentProcess()->HasSwitch("omnibox-autocomplete-filtering") ||
++         base::ContainsOnlyChars(base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII
++         ("omnibox-autocomplete-filtering"), "chrome"))) {
+       url.append(kChromeUIDefaultHost);
+     }
+     FixupPort(trimmed, parts.port, &url);
+diff --git a/components/url_formatter/url_formatter.cc b/components/url_formatter/url_formatter.cc
+index 2f6cb317900b9..adcb4ae01a347 100644
+--- a/components/url_formatter/url_formatter.cc
++++ b/components/url_formatter/url_formatter.cc
+@@ -10,6 +10,7 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "base/command_line.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/no_destructor.h"
+ #include "base/numerics/safe_conversions.h"
+@@ -317,6 +318,13 @@ IDNConversionResult IDNToUnicodeWithAdjustmentsImpl(
+   host16.reserve(host.length());
+   host16.insert(host16.end(), host.begin(), host.end());
+ 
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("force-punycode-hostnames")) {
++    // Leave as punycode.
++    IDNConversionResult result;
++    result.result = host16;
++    return result;
++  }
++
+   // Compute the top level domain to be used in spoof checks later.
+   std::string_view top_level_domain;
+   std::u16string top_level_domain_unicode;
+diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content/browser/renderer_host/render_process_host_impl.cc
+index abe9030414bcc..a37324ca77eea 100644
+--- a/content/browser/renderer_host/render_process_host_impl.cc
++++ b/content/browser/renderer_host/render_process_host_impl.cc
+@@ -3966,6 +3966,7 @@ void RenderProcessHostImpl::PropagateBrowserCommandLineToRenderer(
+ #endif
+ #if BUILDFLAG(IS_WIN)
+       switches::kDisableHighResTimer,
++      "enable-win7-webrtc-hw-h264-decoding",
+       switches::kTextContrast,
+       switches::kTextGamma,
+       switches::kTrySupportedChannelLayouts,
+diff --git a/content/public/browser/frame_accept_header.cc b/content/public/browser/frame_accept_header.cc
+index e6d325dbdd327..37fe9dff5bdb6 100644
+--- a/content/public/browser/frame_accept_header.cc
++++ b/content/public/browser/frame_accept_header.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "content/public/browser/frame_accept_header.h"
+ 
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "content/browser/web_package/signed_exchange_consts.h"
+ #include "content/browser/web_package/signed_exchange_utils.h"
+@@ -15,6 +16,8 @@ namespace content {
+ 
+ std::string FrameAcceptHeaderValue(bool allow_sxg_responses,
+                                    BrowserContext* browser_context) {
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("http-accept-header"))
++     return base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("http-accept-header");
+ #if BUILDFLAG(ENABLE_JXL_DECODER)
+   std::string header_value =
+       base::FeatureList::IsEnabled(blink::features::kJXLImageFormat)
+diff --git a/content/renderer/render_frame_impl.cc b/content/renderer/render_frame_impl.cc
+index 9d3eb74e4d5da..53e922f2726c3 100644
+--- a/content/renderer/render_frame_impl.cc
++++ b/content/renderer/render_frame_impl.cc
+@@ -1249,6 +1249,8 @@ WindowOpenDisposition NavigationPolicyToDisposition(
+     case blink::kWebNavigationPolicyNewWindow:
+       return WindowOpenDisposition::NEW_WINDOW;
+     case blink::kWebNavigationPolicyNewPopup:
++      if (base::CommandLine::ForCurrentProcess()->HasSwitch("popups-to-tabs"))
++          return WindowOpenDisposition::NEW_FOREGROUND_TAB;
+       return WindowOpenDisposition::NEW_POPUP;
+     case blink::kWebNavigationPolicyPictureInPicture:
+       return WindowOpenDisposition::NEW_PICTURE_IN_PICTURE;
+@@ -2286,13 +2288,13 @@ void RenderFrameImpl::Delete(mojom::FrameDeleteIntention intent) {
+       // main frame when a commit (and ownership transfer) is imminent.
+       // TODO(dcheng): This is the case of https://crbug.com/838348.
+       DCHECK(is_main_frame_);
+-#if !BUILDFLAG(IS_ANDROID)
++#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WIN)
+       CHECK(!in_frame_tree_);
+ #else
+       // Previously this CHECK() was disabled on Android because it was much
+       // easier to hit the race there.
+       CHECK(!in_frame_tree_);
+-#endif  // !BUILDFLAG(IS_ANDROID)
++#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WIN)
+       break;
+   }
+ 
+diff --git a/content/renderer/renderer_blink_platform_impl.cc b/content/renderer/renderer_blink_platform_impl.cc
+index c2f071d20190e..7b1816ad163c0 100644
+--- a/content/renderer/renderer_blink_platform_impl.cc
++++ b/content/renderer/renderer_blink_platform_impl.cc
+@@ -117,6 +117,7 @@
+ #include "url/origin.h"
+ 
+ #if BUILDFLAG(IS_WIN)
++#include "base/win/windows_version.h"
+ #include "content/child/child_process_sandbox_support_impl_win.h"
+ #include "third_party/blink/public/web/win/web_font_rendering.h"
+ #endif
+@@ -688,6 +689,23 @@ void RendererBlinkPlatformImpl::GetWebRTCRendererPreferences(
+   *allow_mdns_obfuscation = true;
+ }
+ 
++bool RendererBlinkPlatformImpl::IsWebRtcHWH264DecodingEnabled(
++    webrtc::VideoCodecType video_codec_type) {
++#if BUILDFLAG(IS_WIN)
++  // Do not use hardware decoding for H.264 on Win7, due to high latency.
++  // See https://crbug.com/webrtc/5717.
++  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "enable-win7-webrtc-hw-h264-decoding") &&
++      video_codec_type == webrtc::kVideoCodecH264 &&
++      base::win::GetVersion() == base::win::Version::WIN7) {
++    DVLOG(1) << "H.264 HW decoding is not supported on Win7";
++    return false;
++  }
++#endif  // BUILDFLAG(IS_WIN)
++  return true;
++}
++
++
+ bool RendererBlinkPlatformImpl::IsWebRtcHWEncodingEnabled() {
+   return base::FeatureList::IsEnabled(::features::kWebRtcHWEncoding);
+ }
+diff --git a/content/renderer/renderer_blink_platform_impl.h b/content/renderer/renderer_blink_platform_impl.h
+index 9664dd32d8945..e934f11f06538 100644
+--- a/content/renderer/renderer_blink_platform_impl.h
++++ b/content/renderer/renderer_blink_platform_impl.h
+@@ -177,6 +177,8 @@ class CONTENT_EXPORT RendererBlinkPlatformImpl : public BlinkPlatformImpl {
+       uint16_t* udp_min_port,
+       uint16_t* udp_max_port,
+       bool* allow_mdns_obfuscation) override;
++  bool IsWebRtcHWH264DecodingEnabled(
++      webrtc::VideoCodecType video_coded_type) override;
+   bool IsWebRtcHWEncodingEnabled() override;
+   bool IsWebRtcHWDecodingEnabled() override;
+   bool AllowsLoopbackInPeerConnection() override;
+diff --git a/extensions/browser/extension_protocols.cc b/extensions/browser/extension_protocols.cc
+index ac068eee56b03..b1d419c043aab 100644
+--- a/extensions/browser/extension_protocols.cc
++++ b/extensions/browser/extension_protocols.cc
+@@ -16,6 +16,7 @@
+ 
+ #include "base/base64.h"
+ #include "base/callback_list.h"
++#include "base/command_line.h"
+ #include "base/compiler_specific.h"
+ #include "base/containers/span.h"
+ #include "base/files/file_path.h"
+@@ -270,6 +271,13 @@ bool AllowExtensionResourceLoad(const network::ResourceRequest& request,
+     return true;
+   }
+ 
++  if (child_id.GetUnsafeValue() != content::ChildProcessHost::kInvalidUniqueID &&
++      content::RenderProcessHost::FromID(child_id) &&
++      content::RenderProcessHost::FromID(child_id)->GetProcess().is_current() &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch("single-process"))
++       return true;
++
++
+   // Allow the extension module embedder to grant permission for loads.
+   if (ExtensionsBrowserClient::Get()->AllowCrossRendererResourceLoad(
+           request, destination, page_transition, child_id, is_incognito,
+diff --git a/extensions/browser/extension_util.cc b/extensions/browser/extension_util.cc
+index 3e02498993436..e8df047adde40 100644
+--- a/extensions/browser/extension_util.cc
++++ b/extensions/browser/extension_util.cc
+@@ -575,6 +575,14 @@ bool AnyCurrentlyInstalledExtensionIsFromWebstore(
+                              });
+ }
+ 
++bool ShouldDownloadAsRegularFile() {
++    const base::CommandLine& command_line =
++        *base::CommandLine::ForCurrentProcess();
++    return command_line.HasSwitch("extension-mime-request-handling") &&
++        command_line.GetSwitchValueASCII("extension-mime-request-handling") ==
++        "download-as-regular-file";
++}
++
+ bool IsExtensionDownload(const download::DownloadItem& download_item) {
+   if (download_item.GetTargetDisposition() ==
+       download::DownloadItem::TARGET_DISPOSITION_PROMPT) {
+@@ -584,7 +592,7 @@ bool IsExtensionDownload(const download::DownloadItem& download_item) {
+   if (download_item.GetMimeType() == Extension::kMimeType ||
+       UserScript::IsURLUserScript(download_item.GetURL(),
+                                   download_item.GetMimeType())) {
+-    return true;
++    return ShouldDownloadAsRegularFile();
+   }
+   return false;
+ }
+diff --git a/extensions/browser/extension_util.h b/extensions/browser/extension_util.h
+index 38f29b67eff0d..bc5c271b48eeb 100644
+--- a/extensions/browser/extension_util.h
++++ b/extensions/browser/extension_util.h
+@@ -181,6 +181,10 @@ bool IsAppLaunchableWithoutEnabling(const ExtensionId& extension_id,
+ bool AnyCurrentlyInstalledExtensionIsFromWebstore(
+     content::BrowserContext* context);
+ 
++// Returns true if the user wants all extensions to be downloaded as regular
++// files.
++bool ShouldDownloadAsRegularFile();
++
+ // Returns true if this is an extension download. This also considers user
+ // scripts to be extension downloads, since we convert those automatically.
+ bool IsExtensionDownload(const download::DownloadItem& download_item);
+diff --git a/services/preferences/tracked/device_id_win.cc b/services/preferences/tracked/device_id_win.cc
+index d59df0d9103fe..1b0bd69018328 100644
+--- a/services/preferences/tracked/device_id_win.cc
++++ b/services/preferences/tracked/device_id_win.cc
+@@ -11,11 +11,16 @@
+ #include <memory>
+ 
+ #include "base/check.h"
++#include "base/command_line.h"
+ #include "base/containers/heap_array.h"
+ 
+ MachineIdStatus GetDeterministicMachineSpecificId(std::string* machine_id) {
+   DCHECK(machine_id);
+ 
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("disable-machine-id")) {
++     return MachineIdStatus::NOT_IMPLEMENTED;
++  }
++
+   wchar_t computer_name[MAX_COMPUTERNAME_LENGTH + 1] = {};
+   DWORD computer_name_size = std::size(computer_name);
+ 
+diff --git a/services/preferences/tracked/tracked_atomic_preference.cc b/services/preferences/tracked/tracked_atomic_preference.cc
+index cf75c463ae7d6..b020cfae88e54 100644
+--- a/services/preferences/tracked/tracked_atomic_preference.cc
++++ b/services/preferences/tracked/tracked_atomic_preference.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "services/preferences/tracked/tracked_atomic_preference.h"
+ 
++#include "base/command_line.h"
+ #include "base/memory/scoped_refptr.h"
+ #include "base/values.h"
+ #include "components/os_crypt/async/common/encryptor.h"
+@@ -82,6 +83,12 @@ bool TrackedAtomicPreference::EnforceAndReport(
+       helper_.GetAction(value_state);
+   helper_.ReportAction(reset_action);
+ 
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("disable-machine-id") ||
++   base::CommandLine::ForCurrentProcess()->HasSwitch("disable-encryption") ||
++   base::CommandLine::ForCurrentProcess()->HasSwitch("revert-from-portable")) {
++     reset_action = TrackedPreferenceHelper::DONT_RESET;
++  }
++
+   bool was_reset = false;
+   if (reset_action == TrackedPreferenceHelper::DO_RESET ||
+       reset_action == TrackedPreferenceHelper::DO_RESET_LEGACY ||
+diff --git a/third_party/blink/public/platform/platform.h b/third_party/blink/public/platform/platform.h
+index bb80991d521ed..a969ee06d411b 100644
+--- a/third_party/blink/public/platform/platform.h
++++ b/third_party/blink/public/platform/platform.h
+@@ -60,6 +60,7 @@
+ #include "third_party/blink/public/platform/web_string.h"
+ #include "third_party/blink/public/platform/web_v8_value_converter.h"
+ #include "third_party/blink/public/platform/websocket_handshake_throttle_provider.h"
++#include "third_party/webrtc/api/video/video_codec_type.h"
+ #include "ui/base/resource/resource_scale_factor.h"
+ #include "ui/gl/angle_implementation.h"
+ #include "v8/include/v8-local-handle.h"
+@@ -675,6 +676,11 @@ class BLINK_PLATFORM_EXPORT Platform {
+       uint16_t* udp_max_port,
+       bool* allow_mdns_obfuscation) {}
+ 
++  virtual bool IsWebRtcHWH264DecodingEnabled(
++      webrtc::VideoCodecType video_coded_type) {
++    return true;
++  }
++
+   virtual bool IsWebRtcHWEncodingEnabled() { return true; }
+ 
+   virtual bool IsWebRtcHWDecodingEnabled() { return true; }
+diff --git a/third_party/blink/renderer/platform/peerconnection/rtc_video_decoder_adapter.cc b/third_party/blink/renderer/platform/peerconnection/rtc_video_decoder_adapter.cc
+index 0fe5b9adbb6db..8ff58c1983884 100644
+--- a/third_party/blink/renderer/platform/peerconnection/rtc_video_decoder_adapter.cc
++++ b/third_party/blink/renderer/platform/peerconnection/rtc_video_decoder_adapter.cc
+@@ -533,6 +533,9 @@ std::unique_ptr<RTCVideoDecoderAdapter> RTCVideoDecoderAdapter::Create(
+   const webrtc::VideoCodecType video_codec_type =
+       webrtc::PayloadStringToCodecType(format.name);
+ 
++  if (!Platform::Current()->IsWebRtcHWH264DecodingEnabled(video_codec_type))
++    return nullptr;
++
+   // Bail early for unknown codecs.
+   if (WebRtcToMediaVideoCodec(video_codec_type) == media::VideoCodec::kUnknown)
+     return nullptr;
+diff --git a/ui/base/mojom/window_open_disposition_mojom_traits.h b/ui/base/mojom/window_open_disposition_mojom_traits.h
+index 5a248db1eb26d..58e5afc32a1e1 100644
+--- a/ui/base/mojom/window_open_disposition_mojom_traits.h
++++ b/ui/base/mojom/window_open_disposition_mojom_traits.h
+@@ -5,6 +5,7 @@
+ #ifndef UI_BASE_MOJOM_WINDOW_OPEN_DISPOSITION_MOJOM_TRAITS_H_
+ #define UI_BASE_MOJOM_WINDOW_OPEN_DISPOSITION_MOJOM_TRAITS_H_
+ 
++#include "base/command_line.h"
+ #include "base/notreached.h"
+ #include "mojo/public/cpp/bindings/enum_traits.h"
+ #include "ui/base/mojom/window_open_disposition.mojom.h"
+@@ -30,6 +31,8 @@ struct EnumTraits<ui::mojom::WindowOpenDisposition, WindowOpenDisposition> {
+       case WindowOpenDisposition::NEW_PICTURE_IN_PICTURE:
+         return ui::mojom::WindowOpenDisposition::NEW_PICTURE_IN_PICTURE;
+       case WindowOpenDisposition::NEW_POPUP:
++        if (base::CommandLine::ForCurrentProcess()->HasSwitch("popups-to-tabs"))
++           return ui::mojom::WindowOpenDisposition::NEW_FOREGROUND_TAB;
+         return ui::mojom::WindowOpenDisposition::NEW_POPUP;
+       case WindowOpenDisposition::NEW_WINDOW:
+         return ui::mojom::WindowOpenDisposition::NEW_WINDOW;
+diff --git a/ui/compositor/compositor.cc b/ui/compositor/compositor.cc
+index e54319f95c7db..954d3322476c7 100644
+--- a/ui/compositor/compositor.cc
++++ b/ui/compositor/compositor.cc
+@@ -160,6 +160,8 @@ Compositor::Compositor(const viz::FrameSinkId& frame_sink_id,
+       }
+     }
+   }
++  settings.initial_debug_state.block_lazy_compositing = 
++      !command_line->HasSwitch("force-lazy-compositor");
+   settings.initial_debug_state.show_fps_counter =
+       command_line->HasSwitch(switches::kUIShowFPSCounter);
+   settings.initial_debug_state.show_layer_animation_bounds_rects =
+diff --git a/ui/gfx/font_render_params_win.cc b/ui/gfx/font_render_params_win.cc
+index 7151faefd2c98..6e272f16542fe 100644
+--- a/ui/gfx/font_render_params_win.cc
++++ b/ui/gfx/font_render_params_win.cc
+@@ -10,6 +10,7 @@
+ #include <optional>
+ 
+ #include "base/callback_list.h"
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "base/features.h"
+ #include "base/files/file_path.h"
+@@ -75,7 +76,7 @@ class CachedFontRenderParams {
+       return *params_;
+ 
+     params_ = std::make_unique<FontRenderParams>();
+-    params_->antialiasing = false;
++    params_->antialiasing = true;
+     params_->subpixel_positioning = false;
+     params_->autohinter = false;
+     params_->use_bitmaps = false;
+@@ -94,6 +95,11 @@ class CachedFontRenderParams {
+       }
+     }
+ 
++    if (base::CommandLine::ForCurrentProcess()->HasSwitch("disable-browser-font-smoothing-win")) {
++       params_->antialiasing = false;
++       params_->subpixel_positioning = false;	
++    }
++
+     if (base::FeatureList::IsEnabled(
+             features::kUseGammaContrastRegistrySettings)) {
+       params_->text_contrast = FontUtilWin::GetContrastFromRegistry();
